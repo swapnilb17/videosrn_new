@@ -1,5 +1,7 @@
+import logging
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,8 @@ from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -133,59 +137,58 @@ def safe_presign_get(
         raise S3UploadError(str(e)) from e
 
 
+_S3_UPLOAD_WORKERS = 6
+
+
 def upload_job_directory(settings: Settings, job_dir: Path, job_id: str) -> dict[str, str]:
-    """Upload standard job outputs; returns logical filename -> S3 object key."""
+    """Upload standard job outputs in parallel; returns logical filename -> S3 object key."""
     client = s3_client(settings)
     bucket = (settings.s3_bucket or "").strip()
     prefix = settings.s3_key_prefix_for_job(job_id)
-    keys: dict[str, str] = {}
-    pairs: list[tuple[Path, str, str | None]] = [
+
+    upload_plan: list[tuple[Path, str, str | None]] = [
         (job_dir / "voiceover.mp3", "voiceover.mp3", "audio/mpeg"),
         (job_dir / "output.mp4", "output.mp4", "video/mp4"),
         (job_dir / "script.json", "script.json", "application/json"),
     ]
+
+    slides = job_dir / "slides"
+    if slides.is_dir():
+        for png in sorted(slides.glob("*.png")):
+            upload_plan.append((png, f"slides/{png.name}", "image/png"))
+
+    for logical, ctype in [
+        ("title.png", "image/png"),
+        ("branding_logo.png", "image/png"),
+        ("user_product.png", "image/png"),
+        ("user_cta.png", "image/png"),
+        ("user_thumbnail.jpg", "image/jpeg"),
+        ("user_address.txt", "text/plain; charset=utf-8"),
+    ]:
+        p = job_dir / logical
+        if p.is_file():
+            upload_plan.append((p, logical, ctype))
+
+    pending = [(path, logical, ctype) for path, logical, ctype in upload_plan if path.is_file()]
+
+    keys: dict[str, str] = {}
     try:
-        for path, logical_name, ctype in pairs:
-            if path.is_file():
-                key = prefix + logical_name
-                upload_file(client, bucket, key, path, content_type=ctype)
-                keys[logical_name] = key
-        slides = job_dir / "slides"
-        if slides.is_dir():
-            for png in sorted(slides.glob("*.png")):
-                logical = f"slides/{png.name}"
+        with ThreadPoolExecutor(max_workers=min(_S3_UPLOAD_WORKERS, len(pending) or 1)) as pool:
+            futures = {}
+            for path, logical, ctype in pending:
                 key = prefix + logical
-                upload_file(client, bucket, key, png, content_type="image/png")
+                fut = pool.submit(upload_file, client, bucket, key, path, content_type=ctype)
+                futures[fut] = (logical, key)
+            for fut in as_completed(futures):
+                logical, key = futures[fut]
+                fut.result()
                 keys[logical] = key
-        title = job_dir / "title.png"
-        if title.is_file():
-            key = prefix + "title.png"
-            upload_file(client, bucket, key, title, content_type="image/png")
-            keys["title.png"] = key
-        brand = job_dir / "branding_logo.png"
-        if brand.is_file():
-            key = prefix + "branding_logo.png"
-            upload_file(client, bucket, key, brand, content_type="image/png")
-            keys["branding_logo.png"] = key
-        for logical, ctype in (
-            ("user_product.png", "image/png"),
-            ("user_cta.png", "image/png"),
-            ("user_thumbnail.jpg", "image/jpeg"),
-        ):
-            p = job_dir / logical
-            if p.is_file():
-                key = prefix + logical
-                upload_file(client, bucket, key, p, content_type=ctype)
-                keys[logical] = key
-        addr_txt = job_dir / "user_address.txt"
-        if addr_txt.is_file():
-            key = prefix + "user_address.txt"
-            upload_file(client, bucket, key, addr_txt, content_type="text/plain; charset=utf-8")
-            keys["user_address.txt"] = key
     except (BotoCoreError, ClientError, OSError) as e:
         raise S3UploadError(str(e)) from e
+
     if "voiceover.mp3" not in keys or "output.mp4" not in keys:
         raise S3UploadError("Missing voiceover.mp3 or output.mp4 after upload")
+    logger.info("S3 uploaded %d files for job=%s", len(keys), job_id)
     return keys
 
 

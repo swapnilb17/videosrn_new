@@ -101,8 +101,8 @@ class Settings(BaseSettings):
     # Vertex/Gemini Imagen: block_medium_and_above (default API) | block_only_high | block_low_and_above | block_none
     imagen_safety_setting: str = Field(default="", validation_alias="IMAGEN_SAFETY_SETTING")
     gemini_timeout: float = Field(default=180.0, validation_alias="GEMINI_TIMEOUT")
-    # Imagen is sensitive to parallel calls; 1 avoids intermittent 429 / empty responses.
-    imagen_max_concurrent: int = Field(default=1, validation_alias="IMAGEN_MAX_CONCURRENT")
+    # Parallel image API calls. Higher values cut wall time but risk 429s from the provider.
+    imagen_max_concurrent: int = Field(default=4, validation_alias="IMAGEN_MAX_CONCURRENT")
     # When true, IMAGEN_MODEL=imagen-4.0-generate-001 is kept (higher quality, slower). Default false maps it to fast.
     imagen_allow_standard_generate: bool = Field(
         default=False,

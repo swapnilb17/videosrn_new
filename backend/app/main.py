@@ -3,6 +3,7 @@ import errno
 import logging
 import os
 import shutil
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -552,6 +553,9 @@ async def generate(
         applied_output_quality or "-",
     )
 
+    t_pipeline_start = time.perf_counter()
+    stage_times: dict[str, float] = {}
+
     async def _fail(msg: str) -> None:
         if persist and session is not None:
             await job_mark_failed(session, job_uuid, msg)
@@ -566,6 +570,7 @@ async def generate(
             owner_sub=owner_sub,
         )
 
+    t0 = time.perf_counter()
     try:
         script = await generate_script(
             settings,
@@ -580,6 +585,8 @@ async def generate(
     except RuntimeError as e:
         await _fail(str(e))
         raise HTTPException(status_code=503, detail=str(e)) from e
+    stage_times["script_generation"] = time.perf_counter() - t0
+    logger.info("job=%s TIMING script_generation=%.1fs", job_id, stage_times["script_generation"])
 
     if persist and session is not None:
         await job_update_script(session, job_uuid, script.model_dump())
@@ -589,6 +596,7 @@ async def generate(
 
     mp3_path = job_dir / "voiceover.mp3"
     tts_provider: Literal["google", "elevenlabs", "coqui"] = "coqui"
+    t0 = time.perf_counter()
 
     async def _tts_coqui_fallback(
         primary_err: Exception,
@@ -697,12 +705,17 @@ async def generate(
                 detail=hint or "Voice generation failed. Check server logs.",
             ) from ce
 
+    stage_times["tts"] = time.perf_counter() - t0
+    logger.info("job=%s TIMING tts=%.1fs provider=%s", job_id, stage_times["tts"], tts_provider)
+
+    t0 = time.perf_counter()
     mp3_path = await asyncio.to_thread(
         trim_mp3_to_max_duration,
         mp3_path,
         float(target_sec),
         ffmpeg_explicit=settings.ffmpeg_path,
     )
+    stage_times["audio_trim"] = time.perf_counter() - t0
 
     mp4_path = job_dir / "output.mp4"
     visual_mode: Literal[
@@ -720,6 +733,7 @@ async def generate(
             "enable Vertex Imagen (IMAGEN_USE_VERTEX), or set NANO_BANANA_API_KEY for the alternate provider."
         )
 
+    t0 = time.perf_counter()
     image_paths: list[Path] | None = None
     slides_dir = job_dir / "slides"
     product_ref_path = product_file if product_applied and product_file.is_file() else None
@@ -798,18 +812,35 @@ async def generate(
         else:
             used_multimodal_product_ref = False
 
+    stage_times["slide_image_gen"] = time.perf_counter() - t0
+    logger.info(
+        "job=%s TIMING slide_image_gen=%.1fs slides=%s mode=%s",
+        job_id, stage_times["slide_image_gen"],
+        len(image_paths) if image_paths else 0, visual_mode,
+    )
+
     if image_paths is not None:
         slideshow_overlay = overlay_assets
         if product_applied and product_file.is_file():
             if not used_multimodal_product_ref:
+                t0 = time.perf_counter()
                 stem_vis = visibility_by_slide_stem(
                     topic,
                     script_visual_segments(script),
                     script.visual_segments_en,
                 )
-                for sp in image_paths:
-                    if stem_vis.get(sp.stem, False):
-                        await asyncio.to_thread(composite_user_product_onto_slide, sp, product_file)
+                composite_tasks = [
+                    asyncio.to_thread(composite_user_product_onto_slide, sp, product_file)
+                    for sp in image_paths
+                    if stem_vis.get(sp.stem, False)
+                ]
+                if composite_tasks:
+                    await asyncio.gather(*composite_tasks)
+                stage_times["product_composite"] = time.perf_counter() - t0
+                logger.info(
+                    "job=%s TIMING product_composite=%.1fs composites=%d",
+                    job_id, stage_times["product_composite"], len(composite_tasks),
+                )
             slideshow_overlay = replace(overlay_assets, product_image_path=None)
         try:
             ffprobe = resolve_ffprobe(settings.ffmpeg_path)
@@ -843,6 +874,7 @@ async def generate(
                     durs = word_weighted_durations(segment_texts, total_audio)
             else:
                 durs = word_weighted_durations(segment_texts, total_audio)
+            t0 = time.perf_counter()
             mux_slideshow_with_audio(
                 paths_mux,
                 durs,
@@ -854,6 +886,11 @@ async def generate(
                 overlay_assets=slideshow_overlay,
                 ken_burns=enhance_kb,
                 final_slide_is_dedicated_cta=dedicated_cta,
+            )
+            stage_times["slideshow_mux"] = time.perf_counter() - t0
+            logger.info(
+                "job=%s TIMING slideshow_mux=%.1fs slides=%d",
+                job_id, stage_times["slideshow_mux"], len(paths_mux),
             )
         except (RuntimeError, ValueError) as e:
             logger.warning(
@@ -895,18 +932,11 @@ async def generate(
         except Exception as e:
             logger.warning("job=%s embed thumbnail failed: %s", job_id, e)
 
-    logger.info(
-        "job=%s encode complete visual_mode=%s tts_provider=%s slide_count=%s",
-        job_id,
-        visual_mode,
-        tts_provider,
-        len(image_paths) if image_paths is not None else 0,
-    )
-
     if visual_mode != "title_card":
         visual_detail = None
 
     if persist and session is not None:
+        t0 = time.perf_counter()
         try:
             s3_keys = await asyncio.to_thread(upload_job_directory, settings, job_dir, job_id)
             await job_mark_succeeded(
@@ -925,8 +955,19 @@ async def generate(
                 status_code=503,
                 detail="Video storage failed. Try again later.",
             ) from e
+        stage_times["s3_upload"] = time.perf_counter() - t0
+        logger.info("job=%s TIMING s3_upload=%.1fs", job_id, stage_times["s3_upload"])
         if settings.artifact_cleanup_after_s3:
             background_tasks.add_task(_cleanup_job_dir, str(job_dir.resolve()))
+
+    total_elapsed = time.perf_counter() - t_pipeline_start
+    stage_summary = " ".join(f"{k}={v:.1f}s" for k, v in stage_times.items())
+    logger.info(
+        "job=%s TIMING TOTAL=%.1fs visual_mode=%s tts=%s slides=%d | %s",
+        job_id, total_elapsed, visual_mode, tts_provider,
+        len(image_paths) if image_paths is not None else 0,
+        stage_summary,
+    )
 
     return GenerateResponse(
         job_id=job_id,
