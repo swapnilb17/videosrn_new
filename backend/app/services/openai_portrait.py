@@ -57,7 +57,6 @@ async def generate_openai_portrait(
             image=image_file,
             prompt=prompt,
             size=size,
-            quality="high",
             response_format="b64_json",
         )
 
