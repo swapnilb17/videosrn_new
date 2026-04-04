@@ -52,6 +52,43 @@ def _get_face_app():
     return _face_app
 
 
+def _detect_faces(face_app, img_cv: np.ndarray, label: str):
+    """Try progressively more aggressive detection strategies."""
+    faces = face_app.get(img_cv)
+    if faces:
+        return faces
+
+    logger.info("Face detect (%s): standard failed, trying enhanced contrast", label)
+    enhanced = _enhance_for_detection(img_cv)
+    faces = face_app.get(enhanced)
+    if faces:
+        return faces
+
+    logger.info("Face detect (%s): enhanced failed, trying lower threshold", label)
+    old_thresh = face_app.det_model.det_thresh if hasattr(face_app, "det_model") else 0.5
+    try:
+        if hasattr(face_app, "det_model"):
+            face_app.det_model.det_thresh = 0.15
+        faces = face_app.get(enhanced)
+        if faces:
+            return faces
+    finally:
+        if hasattr(face_app, "det_model"):
+            face_app.det_model.det_thresh = old_thresh
+
+    return []
+
+
+def _enhance_for_detection(img_cv: np.ndarray) -> np.ndarray:
+    """Enhance a stylized/low-contrast image to help face detection."""
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced_gray = clahe.apply(gray)
+    enhanced = cv2.cvtColor(enhanced_gray, cv2.COLOR_GRAY2BGR)
+    blended = cv2.addWeighted(img_cv, 0.5, enhanced, 0.5, 0)
+    return blended
+
+
 def _get_swapper():
     global _swapper
     if _swapper is None:
@@ -91,11 +128,11 @@ def _swap_face_sync(
     template_cv = _pil_to_cv2(Image.open(template_path))
     user_cv = _pil_to_cv2(Image.open(io.BytesIO(user_photo_bytes)))
 
-    template_faces = face_app.get(template_cv)
+    template_faces = _detect_faces(face_app, template_cv, "template")
     if not template_faces:
         raise FaceSwapError("No face detected in template image")
 
-    user_faces = face_app.get(user_cv)
+    user_faces = _detect_faces(face_app, user_cv, "user")
     if not user_faces:
         raise FaceSwapError("No face detected in uploaded photo")
 
