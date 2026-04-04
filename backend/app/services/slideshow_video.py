@@ -274,7 +274,7 @@ def mux_slideshow_with_audio(
                     "-r",
                     "30",
                     "-preset",
-                    "medium",
+                    "veryfast",
                     "-tune",
                     "stillimage",
                     str(seg),
