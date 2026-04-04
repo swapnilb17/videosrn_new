@@ -28,6 +28,6 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           APP_DIR: ${{ secrets.APP_DIR }}
         run: |
-          DIR="${APP_DIR:-/opt/enably/videosrn}"
+          DIR="${APP_DIR:-/home/ec2-user/enably-vgen}"
           ssh -o BatchMode=yes "${SERVER_USER}@${SERVER_HOST}" \
             "cd ${DIR} && APP_DIR=${DIR} bash scripts/deploy.sh"

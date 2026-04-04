@@ -2,7 +2,7 @@
 # Runs ON THE SERVER after git pull. Rebuilds and restarts Docker containers.
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/enably/videosrn}"
+APP_DIR="${APP_DIR:-/home/ec2-user/enably-vgen}"
 
 cd "$APP_DIR"
 

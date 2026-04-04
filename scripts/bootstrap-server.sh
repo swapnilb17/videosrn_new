@@ -2,7 +2,7 @@
 # First-time server setup. Run as a user with sudo (not root).
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/enably/videosrn}"
+APP_DIR="${APP_DIR:-/home/ec2-user/enably-vgen}"
 GIT_REPO_SSH="${GIT_REPO_SSH:-git@github.com:swapnilb17/videosrn_new.git}"
 GIT_REPO_HTTPS="${GIT_REPO_HTTPS:-https://github.com/swapnilb17/videosrn_new.git}"
 
