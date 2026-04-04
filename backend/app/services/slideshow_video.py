@@ -1,5 +1,6 @@
 import logging
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 
@@ -230,7 +231,7 @@ def mux_slideshow_with_audio(
     list_path = work / "concat.txt"
     merged = work / "video_noaudio.mp4"
     try:
-        for i, (img, dur) in enumerate(zip(image_paths, segment_seconds, strict=True)):
+        def _encode_segment(i: int, img: Path, dur: float) -> Path:
             dur = max(0.5, float(dur))
             seg = work / f"part_{i:03d}.mp4"
             is_cta_end = final_slide_is_dedicated_cta and i == last_idx
@@ -242,7 +243,6 @@ def mux_slideshow_with_audio(
                 wm_png = wm_main
             use_ken = ken_burns and not is_cta_end
             if use_ken:
-                # More frames per second of slide = smaller zoom steps (less visible stepping).
                 num_frames = max(24, int(round(dur * 30)))
                 fc = _filter_complex_ken_burns_slide(
                     width,
@@ -277,6 +277,8 @@ def mux_slideshow_with_audio(
                     "veryfast",
                     "-tune",
                     "stillimage",
+                    "-threads",
+                    "1",
                     str(seg),
                 ]
             else:
@@ -302,13 +304,30 @@ def mux_slideshow_with_audio(
                     "yuv420p",
                     "-r",
                     "30",
+                    "-threads",
+                    "1",
                     str(seg),
                 ]
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if proc.returncode != 0:
                 logger.error("ffmpeg segment %s failed: %s", i, proc.stderr)
                 raise RuntimeError(f"Failed to encode slide {i}")
-            seg_files.append(seg)
+            return seg
+
+        n_slides = len(image_paths)
+        max_workers = min(n_slides, 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_encode_segment, i, img, dur): i
+                for i, (img, dur) in enumerate(
+                    zip(image_paths, segment_seconds, strict=True)
+                )
+            }
+            results: dict[int, Path] = {}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                results[idx] = fut.result()
+        seg_files = [results[i] for i in range(n_slides)]
 
         lines: list[str] = []
         for seg in seg_files:
