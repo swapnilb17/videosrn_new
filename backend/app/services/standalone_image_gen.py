@@ -30,6 +30,7 @@ from app.services.vertex_imagen import (
     _credentials_path,
     _generate_one_with_region_failover as vertex_imagen_generate_one,
 )
+from app.services.image_watermark import watermark_file
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +58,12 @@ async def generate_standalone_image(
     *,
     aspect_ratio: str = "1:1",
     output_dir: Path | None = None,
+    reference_image: bytes | None = None,
 ) -> ImageGenResult:
     """Generate a single image using the 3-tier failover chain.
+
+    When *reference_image* is provided the user's photo is sent alongside the
+    prompt so the model can produce a face-preserving stylised portrait.
 
     Returns ImageGenResult with the local file path and metadata.
     Raises if all tiers fail.
@@ -88,8 +93,12 @@ async def generate_standalone_image(
     if patched.gemini_native_image_configured():
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                await gemini_native_generate_one(client, patched, prompt, out_path)
+                await gemini_native_generate_one(
+                    client, patched, prompt, out_path,
+                    reference_png_bytes=reference_image,
+                )
             if out_path.is_file() and out_path.stat().st_size > 100:
+                watermark_file(out_path)
                 logger.info("Standalone image: Gemini native OK")
                 return ImageGenResult(out_path, w, h, "gemini-3.1-flash-preview")
         except (GeminiNativeImageError, Exception) as e:
@@ -108,8 +117,10 @@ async def generate_standalone_image(
                         ok = await vertex_gemini_generate_one_location(
                             client, patched, cred_path, project, loc, model,
                             prompt, out_path,
+                            reference_png_bytes=reference_image,
                         )
                         if ok and out_path.is_file() and out_path.stat().st_size > 100:
+                            watermark_file(out_path)
                             logger.info("Standalone image: Vertex Gemini OK (location=%s)", loc)
                             return ImageGenResult(out_path, w, h, "gemini-2.5-flash")
             except (VertexGeminiImageError, Exception) as e:
@@ -130,6 +141,7 @@ async def generate_standalone_image(
                         prompt, out_path,
                     )
                 if out_path.is_file() and out_path.stat().st_size > 100:
+                    watermark_file(out_path)
                     logger.info("Standalone image: Vertex Imagen OK")
                     return ImageGenResult(out_path, w, h, "imagen-4.0")
             except (GoogleImagenError, Exception) as e:

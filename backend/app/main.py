@@ -1030,14 +1030,60 @@ async def serve_generated_voice(job_id: str, filename: str):
 # ---------------------------------------------------------------------------
 
 
+@app.get("/api/portrait-templates")
+async def list_portrait_templates():
+    """Return available portrait style templates for the frontend grid."""
+    templates = [
+        {"id": k, "label": k.replace("_", " ").title()}
+        for k in _PORTRAIT_STYLE_PREFIX
+    ]
+    return {"templates": templates}
+
+
+_TEXT_STYLE_PREFIX = {
+    "photorealistic": "Photorealistic cinematic photograph, shot on professional cinema camera, shallow depth of field, natural lighting. ",
+    "cinematic": "Cinematic film still, dramatic lighting, anamorphic lens flare, color graded. ",
+    "illustration": "Digital illustration, clean lines, vibrant colors, detailed artwork. ",
+    "3d_render": "3D rendered scene, realistic materials, global illumination, octane render quality. ",
+    "anime": "Anime-style illustration, vibrant colors, expressive, detailed character art. ",
+    "watercolor": "Watercolor painting, soft washes, visible brush strokes, artistic and dreamy. ",
+}
+
+_PORTRAIT_IDENTITY_SUFFIX = (
+    " Preserve the exact facial features, face shape, bone structure, eyes, and expression of this person."
+    " The result must be unmistakably this person."
+    " No text, captions, watermarks, or logos in the image."
+)
+
+_PORTRAIT_STYLE_PREFIX = {
+    "ink_sketch": "Transform this person into a dramatic black and white ink sketch portrait. Crosshatching technique, half-face close-up composition, textured paper background, bold contrast, celebrity magazine cover quality.",
+    "monochrome": "Transform this person into a high contrast black and white studio portrait. Professional fashion photography, dramatic single-source lighting, sharp details, editorial magazine quality.",
+    "color_block": "Transform this person into a bold pop art portrait with flat color blocks, graphic design aesthetic, vivid saturated colors, modern poster style.",
+    "runway": "Transform this person into a high fashion editorial portrait, dramatic runway lighting, shallow depth of field, Vogue magazine cover quality.",
+    "risograph": "Transform this person into a risograph print style portrait, halftone dots, limited two-tone color palette, vintage print texture, indie art zine aesthetic.",
+    "technicolor": "Transform this person into a vibrant technicolor portrait, retro Hollywood golden age glamour, rich saturated warm colors, classic film star quality.",
+    "gothic_clay": "Transform this person into a dark gothic clay sculpture portrait, dramatic chiaroscuro shadows, museum quality, Renaissance master painting aesthetic.",
+    "dynamite": "Transform this person into an explosive cinematic action portrait with dramatic fire and sparks, intense energy, blockbuster movie poster composition.",
+    "steampunk": "Transform this person into a steampunk portrait with Victorian industrial aesthetic, brass goggles, mechanical gears, warm sepia tones, adventure explorer look.",
+    "sunrise": "Transform this person into a golden hour backlit portrait, warm sunrise tones, ethereal soft glow, dreamy atmosphere, silhouette rim lighting.",
+    "satou": "Transform this person into a minimalist Japanese aesthetic portrait, clean lines, muted earth tones, wabi-sabi beauty, serene composition.",
+    "cinematic_portrait": "Transform this person into a cinematic film still portrait, dramatic side lighting, shallow depth of field, film grain, moody color grading, Hollywood movie star quality.",
+}
+
+
 @app.post("/api/generate-image")
 async def api_generate_image(
     prompt: Annotated[str, Form()],
     style: Annotated[str, Form()] = "photorealistic",
     aspect_ratio: Annotated[str, Form()] = "1:1",
     count: Annotated[int, Form()] = 1,
+    image: UploadFile | None = File(None),
 ):
-    """Standalone image generation using 3-tier model failover."""
+    """Standalone image generation using 3-tier model failover.
+
+    When an *image* file is uploaded the model receives it as a reference photo
+    for face-preserving portrait stylisation.
+    """
     from app.services.standalone_image_gen import generate_standalone_image, ImageGenResult
 
     settings = get_settings()
@@ -1047,16 +1093,21 @@ async def api_generate_image(
 
     count = max(1, min(count, 4))
 
-    style_prefix = {
-        "photorealistic": "Photorealistic cinematic photograph, shot on professional cinema camera, shallow depth of field, natural lighting. ",
-        "cinematic": "Cinematic film still, dramatic lighting, anamorphic lens flare, color graded. ",
-        "illustration": "Digital illustration, clean lines, vibrant colors, detailed artwork. ",
-        "3d_render": "3D rendered scene, realistic materials, global illumination, octane render quality. ",
-        "anime": "Anime-style illustration, vibrant colors, expressive, detailed character art. ",
-        "watercolor": "Watercolor painting, soft washes, visible brush strokes, artistic and dreamy. ",
-    }.get(style, "")
+    reference_bytes: bytes | None = None
+    if image is not None and image.filename:
+        reference_bytes = await image.read()
+        if len(reference_bytes) < 100:
+            reference_bytes = None
 
-    full_prompt = f"{style_prefix}{prompt_clean}. No text, captions, watermarks, or logos in the image."
+    if reference_bytes:
+        portrait_prefix = _PORTRAIT_STYLE_PREFIX.get(style, "")
+        if portrait_prefix:
+            full_prompt = f"{portrait_prefix}{_PORTRAIT_IDENTITY_SUFFIX}"
+        else:
+            full_prompt = f"{prompt_clean}.{_PORTRAIT_IDENTITY_SUFFIX}"
+    else:
+        style_prefix = _TEXT_STYLE_PREFIX.get(style, "")
+        full_prompt = f"{style_prefix}{prompt_clean}. No text, captions, watermarks, or logos in the image."
 
     images = []
     errors = []
@@ -1064,6 +1115,7 @@ async def api_generate_image(
         try:
             result = await generate_standalone_image(
                 settings, full_prompt, aspect_ratio=aspect_ratio,
+                reference_image=reference_bytes,
             )
             images.append({
                 "url": f"/media/img/{result.path.parent.name}/{result.path.name}",

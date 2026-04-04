@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   ImageIcon,
   Sparkles,
@@ -9,19 +9,37 @@ import {
   Download,
   Loader2,
   Palette,
+  Upload,
+  X,
+  User,
 } from "lucide-react";
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { generateImage, type GenerateImageResponse } from "@/lib/api";
 
-const STYLES = [
+const TEXT_STYLES = [
   { value: "photorealistic", label: "Photorealistic", icon: "📷" },
   { value: "cinematic", label: "Cinematic", icon: "🎬" },
   { value: "illustration", label: "Illustration", icon: "🎨" },
   { value: "3d_render", label: "3D Render", icon: "🧊" },
   { value: "anime", label: "Anime", icon: "✨" },
   { value: "watercolor", label: "Watercolor", icon: "🖌️" },
+] as const;
+
+const PORTRAIT_TEMPLATES = [
+  { value: "ink_sketch", label: "Ink Sketch", thumb: "/templates/ink_sketch.jpg" },
+  { value: "monochrome", label: "Monochrome", thumb: "/templates/monochrome.jpg" },
+  { value: "color_block", label: "Color Block", thumb: "/templates/color_block.jpg" },
+  { value: "runway", label: "Runway", thumb: "/templates/runway.jpg" },
+  { value: "risograph", label: "Risograph", thumb: "/templates/risograph.jpg" },
+  { value: "technicolor", label: "Technicolor", thumb: "/templates/technicolor.jpg" },
+  { value: "gothic_clay", label: "Gothic Clay", thumb: "/templates/gothic_clay.jpg" },
+  { value: "dynamite", label: "Dynamite", thumb: "/templates/dynamite.jpg" },
+  { value: "steampunk", label: "Steampunk", thumb: "/templates/steampunk.jpg" },
+  { value: "sunrise", label: "Sunrise", thumb: "/templates/sunrise.jpg" },
+  { value: "satou", label: "Satou", thumb: "/templates/satou.jpg" },
+  { value: "cinematic_portrait", label: "Cinematic", thumb: "/templates/cinematic_portrait.jpg" },
 ] as const;
 
 const ASPECTS = [
@@ -36,6 +54,9 @@ const IMAGE_COUNTS = [1, 2, 4] as const;
 const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
 
+const ACCEPTED_IMAGE_TYPES = "image/jpeg,image/png,image/webp";
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB
+
 export function TextToImage() {
   const [prompt, setPrompt] = useState("");
   const [style, setStyle] = useState("photorealistic");
@@ -44,6 +65,57 @@ export function TextToImage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateImageResponse | null>(null);
+
+  const [uploadedImage, setUploadedImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageSelect = useCallback((file: File | null) => {
+    if (!file) {
+      setUploadedImage(null);
+      setImagePreview(null);
+      setSelectedTemplate(null);
+      return;
+    }
+    if (file.size > MAX_IMAGE_SIZE) {
+      setError("Image must be under 10 MB");
+      return;
+    }
+    setUploadedImage(file);
+    const url = URL.createObjectURL(file);
+    setImagePreview(url);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const file = e.dataTransfer.files?.[0];
+      if (file && file.type.startsWith("image/")) handleImageSelect(file);
+    },
+    [handleImageSelect],
+  );
+
+  const handleTemplateClick = useCallback(
+    (templateValue: string) => {
+      setSelectedTemplate(templateValue);
+      setStyle(templateValue);
+      const tpl = PORTRAIT_TEMPLATES.find((t) => t.value === templateValue);
+      if (tpl) {
+        setPrompt(
+          `${tpl.label} style portrait — dramatic, celebrity quality, professional`,
+        );
+      }
+    },
+    [],
+  );
+
+  const clearUpload = useCallback(() => {
+    setUploadedImage(null);
+    setImagePreview(null);
+    setSelectedTemplate(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
 
   async function handleGenerate() {
     if (!prompt.trim()) return;
@@ -56,6 +128,9 @@ export function TextToImage() {
     fd.append("style", style);
     fd.append("aspect_ratio", aspect);
     fd.append("count", String(count));
+    if (uploadedImage) {
+      fd.append("image", uploadedImage);
+    }
 
     try {
       const res = await generateImage(fd);
@@ -67,11 +142,13 @@ export function TextToImage() {
     }
   }
 
+  const hasPhoto = !!uploadedImage;
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">Text to Image</h1>
 
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+      <div className="grid gap-4 xl:grid-cols-[380px_1fr]">
         {/* ========= LEFT PANEL — Controls ========= */}
         <Card className="space-y-4 overflow-y-auto max-h-[calc(100vh-140px)]">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
@@ -94,23 +171,112 @@ export function TextToImage() {
             </span>
           </div>
 
-          {/* Style */}
+          {/* Photo Upload */}
           <div className="space-y-1.5">
             <label className="flex items-center gap-1.5 text-sm text-slate-300">
-              <Palette className="h-4 w-4" /> Style
+              <User className="h-4 w-4" /> Upload Your Photo{" "}
+              <span className="text-slate-500 text-xs">(optional)</span>
             </label>
-            <select
-              className={INPUT_CLS}
-              value={style}
-              onChange={(e) => setStyle(e.target.value)}
-            >
-              {STYLES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.icon} {s.label}
-                </option>
-              ))}
-            </select>
+
+            {!imagePreview ? (
+              <div
+                className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-white/15 bg-[#0d1020] p-6 text-center cursor-pointer hover:border-purple-400/40 transition"
+                onDrop={handleDrop}
+                onDragOver={(e) => e.preventDefault()}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload className="h-8 w-8 text-slate-500" />
+                <p className="text-xs text-slate-400">
+                  Drag & drop or click to upload your photo
+                </p>
+                <p className="text-[10px] text-slate-600">
+                  JPG, PNG or WebP — max 10 MB
+                </p>
+              </div>
+            ) : (
+              <div className="relative rounded-xl overflow-hidden border border-white/15">
+                <img
+                  src={imagePreview}
+                  alt="Uploaded"
+                  className="w-full h-36 object-cover"
+                />
+                <button
+                  onClick={clearUpload}
+                  className="absolute top-2 right-2 rounded-full bg-black/60 p-1 hover:bg-black/80 transition"
+                >
+                  <X className="h-4 w-4 text-white" />
+                </button>
+              </div>
+            )}
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPTED_IMAGE_TYPES}
+              className="hidden"
+              onChange={(e) => handleImageSelect(e.target.files?.[0] ?? null)}
+            />
           </div>
+
+          {/* Portrait Style Templates — shown when photo is uploaded */}
+          {hasPhoto && (
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-1.5 text-sm text-slate-300">
+                <Sparkles className="h-4 w-4" /> Pick a Style Template
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {PORTRAIT_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.value}
+                    onClick={() => handleTemplateClick(tpl.value)}
+                    className={`group relative flex flex-col items-center rounded-xl border overflow-hidden text-xs transition hover:border-purple-400/60 ${
+                      selectedTemplate === tpl.value
+                        ? "border-purple-400 ring-2 ring-purple-400/40"
+                        : "border-white/10"
+                    }`}
+                  >
+                    <img
+                      src={tpl.thumb}
+                      alt={tpl.label}
+                      className="w-full aspect-square object-cover"
+                    />
+                    <span
+                      className={`w-full text-center py-1.5 text-[11px] truncate px-1 ${
+                        selectedTemplate === tpl.value
+                          ? "bg-purple-500/20 text-white font-medium"
+                          : "bg-[#0d1020] text-slate-400"
+                      }`}
+                    >
+                      {tpl.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-600">
+                Selecting a template auto-fills the prompt — feel free to edit it
+              </p>
+            </div>
+          )}
+
+          {/* Style dropdown — shown when NO photo is uploaded */}
+          {!hasPhoto && (
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-1.5 text-sm text-slate-300">
+                <Palette className="h-4 w-4" /> Style
+              </label>
+              <select
+                className={INPUT_CLS}
+                value={style}
+                onChange={(e) => setStyle(e.target.value)}
+              >
+                {TEXT_STYLES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.icon} {s.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Aspect Ratio */}
           <div className="space-y-1.5">
@@ -162,7 +328,7 @@ export function TextToImage() {
             ) : (
               <span className="flex items-center gap-2">
                 <Sparkles className="h-4 w-4" />
-                Generate Images
+                {hasPhoto ? "Generate Portrait" : "Generate Images"}
               </span>
             )}
           </ClayButton>
@@ -184,7 +350,9 @@ export function TextToImage() {
             <div className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 via-blue-500/5 to-orange-400/5 p-12 text-center min-h-[300px]">
               <ImageIcon className="h-16 w-16 text-slate-500 mb-4" />
               <p className="text-slate-400 text-sm max-w-xs">
-                Describe your image, choose a style, and click <strong>Generate Images</strong> to create AI images.
+                {hasPhoto
+                  ? "Upload your photo, pick a style template, and click Generate Portrait to create your AI portrait."
+                  : "Describe your image, choose a style, and click Generate Images to create AI images."}
               </p>
             </div>
           )}
@@ -193,7 +361,9 @@ export function TextToImage() {
           {generating && (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 via-blue-500/5 to-orange-400/5 p-12 text-center min-h-[300px]">
               <Loader2 className="h-12 w-12 text-emerald-400 animate-spin mb-4" />
-              <p className="text-slate-300 font-medium">Creating your images...</p>
+              <p className="text-slate-300 font-medium">
+                {hasPhoto ? "Creating your portrait..." : "Creating your images..."}
+              </p>
               <p className="text-slate-500 text-xs mt-1">
                 This may take 10-30 seconds.
               </p>
