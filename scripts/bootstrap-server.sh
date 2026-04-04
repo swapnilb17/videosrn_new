@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # First-time server setup. Run as a user with sudo (not root).
-# Before running: add a GitHub Deploy Key so the server can git pull.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/enably/videosrn}"
-GIT_REPO="${GIT_REPO:-git@github.com:swapnilb17/videosrn_new.git}"
+GIT_REPO_SSH="${GIT_REPO_SSH:-git@github.com:swapnilb17/videosrn_new.git}"
+GIT_REPO_HTTPS="${GIT_REPO_HTTPS:-https://github.com/swapnilb17/videosrn_new.git}"
 
 if [[ "${EUID:-0}" -eq 0 ]]; then
   echo "Run as a normal user with sudo (not root)."
   exit 1
 fi
 
+# ── 1. Docker ────────────────────────────────────────────────
 echo ">>> Installing Docker (if not present)"
 if ! command -v docker &>/dev/null; then
   curl -fsSL https://get.docker.com | sudo sh
@@ -28,6 +29,7 @@ if ! docker compose version &>/dev/null; then
     || echo "Install docker-compose-plugin manually."
 fi
 
+# ── 2. Directories ───────────────────────────────────────────
 echo ">>> Creating application directory"
 sudo mkdir -p "$APP_DIR"
 sudo chown "$USER:$USER" "$APP_DIR"
@@ -37,47 +39,73 @@ sudo mkdir -p /opt/enably/pgdata
 sudo mkdir -p /opt/enably/gcp-credentials
 sudo mkdir -p /mnt/scratch/jobs
 
-echo ">>> Cloning repository"
-if [[ ! -d "$APP_DIR/.git" ]]; then
-  git clone "$GIT_REPO" "$APP_DIR"
-else
-  echo "Repo already present at $APP_DIR — skipping clone"
-fi
-
+# ── 3. Deploy key (BEFORE clone) ────────────────────────────
 echo ">>> Setting up deploy key for GitHub"
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
 if [[ ! -f ~/.ssh/deploy_key ]]; then
   ssh-keygen -t ed25519 -f ~/.ssh/deploy_key -N "" -C "deploy@$(hostname)"
-  echo ""
-  echo "=========================================="
-  echo "Add this public key as a Deploy Key on GitHub:"
-  echo "  Repo → Settings → Deploy keys → Add deploy key"
-  echo "=========================================="
-  cat ~/.ssh/deploy_key.pub
-  echo "=========================================="
-  echo ""
 
-  mkdir -p ~/.ssh
-  cat >> ~/.ssh/config <<SSHEOF
+  if ! grep -q "Host github.com" ~/.ssh/config 2>/dev/null; then
+    cat >> ~/.ssh/config <<'SSHEOF'
 Host github.com
   IdentityFile ~/.ssh/deploy_key
   IdentitiesOnly yes
 SSHEOF
-  chmod 600 ~/.ssh/config
+    chmod 600 ~/.ssh/config
+  fi
+fi
+
+ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+echo ""
+echo "=========================================="
+echo "  DEPLOY KEY (add to GitHub before continuing)"
+echo "  Repo → Settings → Deploy keys → Add deploy key"
+echo "=========================================="
+cat ~/.ssh/deploy_key.pub
+echo "=========================================="
+echo ""
+read -rp "Press ENTER after you've added the key to GitHub... "
+
+# ── 4. Clone ─────────────────────────────────────────────────
+echo ">>> Cloning repository"
+if [[ ! -d "$APP_DIR/.git" ]]; then
+  if git clone "$GIT_REPO_SSH" "$APP_DIR"; then
+    echo "Cloned via SSH"
+  else
+    echo "SSH clone failed — falling back to HTTPS (read-only)"
+    git clone "$GIT_REPO_HTTPS" "$APP_DIR"
+    echo "NOTE: Switch remote to SSH later for deploy pulls:"
+    echo "  cd $APP_DIR && git remote set-url origin $GIT_REPO_SSH"
+  fi
+else
+  echo "Repo already present at $APP_DIR — skipping clone"
+fi
+
+# ── 5. Configure git remote to use SSH for pulls ─────────────
+cd "$APP_DIR"
+CURRENT_URL=$(git remote get-url origin 2>/dev/null || true)
+if [[ "$CURRENT_URL" != "$GIT_REPO_SSH" ]]; then
+  git remote set-url origin "$GIT_REPO_SSH"
+  echo "Remote origin set to SSH: $GIT_REPO_SSH"
 fi
 
 echo ""
-echo ">>> Bootstrap complete."
+echo "=========================================="
+echo "  Bootstrap complete!"
+echo "=========================================="
 echo ""
 echo "Next steps:"
-echo "  1) Add the deploy key above to GitHub (if not already done)"
-echo "  2) Copy .env.docker.example to .env and fill in secrets:"
+echo "  1) Copy .env.docker.example to .env and fill in secrets:"
 echo "       cd $APP_DIR && cp .env.docker.example .env && nano .env"
-echo "  3) Place GCP service-account.json in /opt/enably/gcp-credentials/"
-echo "  4) Set up HTTPS with certbot:"
+echo "  2) Place GCP service-account.json in /opt/enably/gcp-credentials/"
+echo "  3) Set up HTTPS with certbot:"
 echo "       sudo certbot certonly --standalone -d ai.enablyai.com"
-echo "  5) Start the app:"
+echo "  4) Start the app:"
 echo "       cd $APP_DIR && docker compose up -d"
-echo "  6) Add these GitHub repo secrets for auto-deploy:"
+echo "  5) Add these GitHub repo secrets for auto-deploy (Settings → Secrets → Actions):"
 echo "       SERVER_SSH_PRIVATE_KEY  — your SSH private key to this server"
 echo "       SERVER_HOST             — server IP or hostname"
-echo "       SERVER_USER             — SSH username (e.g. ubuntu)"
+echo "       SERVER_USER             — SSH username (e.g. ec2-user)"
