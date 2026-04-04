@@ -29,6 +29,11 @@ const TEXT_STYLES = [
 
 const PORTRAIT_TEMPLATES = [
   { value: "ink_sketch", label: "Ink Sketch", thumb: "/templates/ink_sketch.jpg" },
+  { value: "bold_text", label: "Bold Text", thumb: "/templates/bold_text.jpg" },
+  { value: "street_art", label: "Street Art", thumb: "/templates/street_art.jpg" },
+  { value: "sticky_notes", label: "Sticky Notes", thumb: "/templates/sticky_notes.jpg" },
+  { value: "polaroid", label: "Polaroid", thumb: "/templates/polaroid.jpg" },
+  { value: "cinematic_portrait", label: "Cinematic", thumb: "/templates/cinematic_portrait.jpg" },
   { value: "monochrome", label: "Monochrome", thumb: "/templates/monochrome.jpg" },
   { value: "color_block", label: "Color Block", thumb: "/templates/color_block.jpg" },
   { value: "runway", label: "Runway", thumb: "/templates/runway.jpg" },
@@ -39,7 +44,6 @@ const PORTRAIT_TEMPLATES = [
   { value: "steampunk", label: "Steampunk", thumb: "/templates/steampunk.jpg" },
   { value: "sunrise", label: "Sunrise", thumb: "/templates/sunrise.jpg" },
   { value: "satou", label: "Satou", thumb: "/templates/satou.jpg" },
-  { value: "cinematic_portrait", label: "Cinematic", thumb: "/templates/cinematic_portrait.jpg" },
 ] as const;
 
 const ASPECTS = [
@@ -148,7 +152,7 @@ export function TextToImage() {
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">Text to Image</h1>
 
-      <div className="grid gap-4 xl:grid-cols-[380px_1fr]">
+      <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
         {/* ========= LEFT PANEL — Controls ========= */}
         <Card className="space-y-4 overflow-y-auto max-h-[calc(100vh-140px)]">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
@@ -224,7 +228,7 @@ export function TextToImage() {
               <label className="flex items-center gap-1.5 text-sm text-slate-300">
                 <Sparkles className="h-4 w-4" /> Pick a Style Template
               </label>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-4 gap-1.5">
                 {PORTRAIT_TEMPLATES.map((tpl) => (
                   <button
                     key={tpl.value}

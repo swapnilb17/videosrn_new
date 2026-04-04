@@ -1056,7 +1056,11 @@ _PORTRAIT_IDENTITY_SUFFIX = (
 )
 
 _PORTRAIT_STYLE_PREFIX = {
-    "ink_sketch": "Transform this person into a dramatic black and white ink sketch portrait. Crosshatching technique, half-face close-up composition, textured paper background, bold contrast, celebrity magazine cover quality.",
+    "ink_sketch": "Transform this person into a dramatic black and white ink sketch portrait. Crosshatching technique, half-face close-up composition, textured paper background, ink splatter accents, bold contrast, celebrity magazine cover quality.",
+    "bold_text": "Transform this person into a dramatic black and white ink sketch portrait, half-face close-up composition with bold large title text overlaid on the empty side. Crosshatching and ink splatter details, textured paper, magazine poster design.",
+    "street_art": "Transform this person into a street art graffiti style portrait. Black and white base photo with colorful spray paint scribbles, marker doodles, paint brush strokes overlaid. Urban concrete wall texture background, indie zine aesthetic, raw and edgy.",
+    "sticky_notes": "Transform this person into a creative portrait covered with sticky notes and post-it notes on their face and around them. Each note has handwritten text with life goals and ideas. Clean studio background, content creator aesthetic, motivational mood board style.",
+    "polaroid": "Transform this person into a cinematic portrait holding a polaroid photo of themselves. Multiple floating polaroid photos scattered in the background showing different expressions. Warm moody library or studio setting, shallow depth of field, nostalgic film quality.",
     "monochrome": "Transform this person into a high contrast black and white studio portrait. Professional fashion photography, dramatic single-source lighting, sharp details, editorial magazine quality.",
     "color_block": "Transform this person into a bold pop art portrait with flat color blocks, graphic design aesthetic, vivid saturated colors, modern poster style.",
     "runway": "Transform this person into a high fashion editorial portrait, dramatic runway lighting, shallow depth of field, Vogue magazine cover quality.",
