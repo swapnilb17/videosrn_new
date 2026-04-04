@@ -222,65 +222,69 @@ export function TextToImage() {
             />
           </div>
 
-          {/* Portrait Style Templates — shown when photo is uploaded */}
-          {hasPhoto && (
-            <div className="space-y-1.5">
-              <label className="flex items-center gap-1.5 text-sm text-slate-300">
-                <Sparkles className="h-4 w-4" /> Pick a Style Template
-              </label>
-              <div className="grid grid-cols-4 gap-1.5">
-                {PORTRAIT_TEMPLATES.map((tpl) => (
-                  <button
-                    key={tpl.value}
-                    onClick={() => handleTemplateClick(tpl.value)}
-                    className={`group relative flex flex-col items-center rounded-xl border overflow-hidden text-xs transition hover:border-purple-400/60 ${
+          {/* Portrait Style Templates — always visible */}
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-1.5 text-sm text-slate-300">
+              <Sparkles className="h-4 w-4" /> Pick a Style Template
+              {!hasPhoto && (
+                <span className="text-slate-500 text-[10px] ml-1">
+                  (upload photo above to use)
+                </span>
+              )}
+            </label>
+            <div className="grid grid-cols-4 gap-1.5">
+              {PORTRAIT_TEMPLATES.map((tpl) => (
+                <button
+                  key={tpl.value}
+                  onClick={() => handleTemplateClick(tpl.value)}
+                  className={`group relative flex flex-col items-center rounded-xl border overflow-hidden text-xs transition hover:border-purple-400/60 ${
+                    selectedTemplate === tpl.value
+                      ? "border-purple-400 ring-2 ring-purple-400/40"
+                      : "border-white/10"
+                  }`}
+                >
+                  <img
+                    src={tpl.thumb}
+                    alt={tpl.label}
+                    className="w-full aspect-square object-cover"
+                  />
+                  <span
+                    className={`w-full text-center py-1.5 text-[11px] truncate px-1 ${
                       selectedTemplate === tpl.value
-                        ? "border-purple-400 ring-2 ring-purple-400/40"
-                        : "border-white/10"
+                        ? "bg-purple-500/20 text-white font-medium"
+                        : "bg-[#0d1020] text-slate-400"
                     }`}
                   >
-                    <img
-                      src={tpl.thumb}
-                      alt={tpl.label}
-                      className="w-full aspect-square object-cover"
-                    />
-                    <span
-                      className={`w-full text-center py-1.5 text-[11px] truncate px-1 ${
-                        selectedTemplate === tpl.value
-                          ? "bg-purple-500/20 text-white font-medium"
-                          : "bg-[#0d1020] text-slate-400"
-                      }`}
-                    >
-                      {tpl.label}
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <p className="text-[10px] text-slate-600">
-                Selecting a template auto-fills the prompt — feel free to edit it
-              </p>
+                    {tpl.label}
+                  </span>
+                </button>
+              ))}
             </div>
-          )}
+            <p className="text-[10px] text-slate-600">
+              Selecting a template auto-fills the prompt — feel free to edit it
+            </p>
+          </div>
 
-          {/* Style dropdown — shown when NO photo is uploaded */}
-          {!hasPhoto && (
-            <div className="space-y-1.5">
-              <label className="flex items-center gap-1.5 text-sm text-slate-300">
-                <Palette className="h-4 w-4" /> Style
-              </label>
-              <select
-                className={INPUT_CLS}
-                value={style}
-                onChange={(e) => setStyle(e.target.value)}
-              >
-                {TEXT_STYLES.map((s) => (
-                  <option key={s.value} value={s.value}>
-                    {s.icon} {s.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          {/* Style dropdown — for text-only mode */}
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-1.5 text-sm text-slate-300">
+              <Palette className="h-4 w-4" /> Style
+            </label>
+            <select
+              className={INPUT_CLS}
+              value={style}
+              onChange={(e) => {
+                setStyle(e.target.value);
+                setSelectedTemplate(null);
+              }}
+            >
+              {TEXT_STYLES.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.icon} {s.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
           {/* Aspect Ratio */}
           <div className="space-y-1.5">
