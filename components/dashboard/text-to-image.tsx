@@ -33,6 +33,17 @@ const PORTRAIT_TEMPLATES = [
   { value: "street_art", label: "Street Art", thumb: "/templates/street_art.jpg" },
   { value: "sticky_notes", label: "Sticky Notes", thumb: "/templates/sticky_notes.jpg" },
   { value: "polaroid", label: "Polaroid", thumb: "/templates/polaroid.jpg" },
+  { value: "cinematic_portrait", label: "Cinematic", thumb: "/templates/cinematic_portrait.jpg" },
+  { value: "monochrome", label: "Monochrome", thumb: "/templates/monochrome.jpg" },
+  { value: "color_block", label: "Color Block", thumb: "/templates/color_block.jpg" },
+  { value: "runway", label: "Runway", thumb: "/templates/runway.jpg" },
+  { value: "risograph", label: "Risograph", thumb: "/templates/risograph.jpg" },
+  { value: "technicolor", label: "Technicolor", thumb: "/templates/technicolor.jpg" },
+  { value: "gothic_clay", label: "Gothic Clay", thumb: "/templates/gothic_clay.jpg" },
+  { value: "dynamite", label: "Dynamite", thumb: "/templates/dynamite.jpg" },
+  { value: "steampunk", label: "Steampunk", thumb: "/templates/steampunk.jpg" },
+  { value: "sunrise", label: "Sunrise", thumb: "/templates/sunrise.jpg" },
+  { value: "satou", label: "Satou", thumb: "/templates/satou.jpg" },
 ] as const;
 
 const ASPECTS = [
@@ -91,12 +102,6 @@ export function TextToImage() {
 
   const handleTemplateClick = useCallback(
     (templateValue: string) => {
-      if (selectedTemplate === templateValue) {
-        setSelectedTemplate(null);
-        setStyle("photorealistic");
-        setPrompt("");
-        return;
-      }
       setSelectedTemplate(templateValue);
       setStyle(templateValue);
       const tpl = PORTRAIT_TEMPLATES.find((t) => t.value === templateValue);
@@ -106,7 +111,7 @@ export function TextToImage() {
         );
       }
     },
-    [selectedTemplate],
+    [],
   );
 
   const clearUpload = useCallback(() => {
@@ -256,8 +261,7 @@ export function TextToImage() {
               ))}
             </div>
             <p className="text-[10px] text-slate-600">
-              Click a selected template again to deselect. Your face is swapped
-              into the template — pose, clothing &amp; text stay intact.
+              Selecting a template auto-fills the prompt — feel free to edit it
             </p>
           </div>
 
@@ -338,9 +342,7 @@ export function TextToImage() {
           </ClayButton>
 
           <p className="text-xs text-slate-500">
-            {hasPhoto && selectedTemplate
-              ? "Face-swap mode — your face, their style"
-              : "Powered by Gemini + Imagen (multi-tier failover)"}
+            Powered by Gemini + Imagen (3-tier failover)
           </p>
         </Card>
 

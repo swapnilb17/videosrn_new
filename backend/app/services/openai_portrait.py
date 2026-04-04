@@ -52,29 +52,13 @@ async def generate_openai_portrait(
         image_file = io.BytesIO(image_bytes)
         image_file.name = "photo.png"
 
-        response = None
-        for model in ("gpt-image-1", "dall-e-2"):
-            try:
-                kwargs: dict = {
-                    "model": model,
-                    "image": image_file,
-                    "prompt": prompt,
-                    "response_format": "b64_json",
-                }
-                if model == "gpt-image-1":
-                    kwargs["size"] = size
-                else:
-                    kwargs["size"] = "1024x1024"
-                response = await client.images.edit(**kwargs)
-                logger.info("OpenAI portrait: model=%s accepted", model)
-                break
-            except Exception as model_err:
-                logger.warning("OpenAI portrait: model=%s failed: %s", model, model_err)
-                image_file.seek(0)
-                continue
-
-        if response is None:
-            raise OpenAIPortraitError("All OpenAI models failed for images.edit")
+        response = await client.images.edit(
+            model="gpt-image-1",
+            image=image_file,
+            prompt=prompt,
+            size=size,
+            response_format="b64_json",
+        )
 
         if not response.data or not response.data[0].b64_json:
             raise OpenAIPortraitError(
