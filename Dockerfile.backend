@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+# System deps: ffmpeg for video mux, libpq-dev for psycopg2, fonts for Pillow text rendering
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libpq-dev \
+        fonts-dejavu-core \
+        postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/backend
+
+COPY backend/ .
+
+# Install Python deps (base only — no Coqui TTS)
+RUN pip install --no-cache-dir -e .
+
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV PYTHONUNBUFFERED=1
+
+COPY scripts/docker-entrypoint-backend.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 8000
+
+ENTRYPOINT ["entrypoint.sh"]

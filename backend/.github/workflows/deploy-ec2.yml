@@ -1,0 +1,35 @@
+# Requires repo secrets: EC2_SSH_PRIVATE_KEY, EC2_USER, EC2_HOST (optional EC2_APP_DIR, EC2_SYSTEMD_SERVICE).
+# EC2 must be able to git pull (GitHub Deploy key). See docs/EC2_FULL_SETUP.md
+name: Deploy to EC2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start ssh-agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      - name: Trust EC2 host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Pull on server and restart app
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          APP_DIR: ${{ secrets.EC2_APP_DIR }}
+          SERVICE: ${{ secrets.EC2_SYSTEMD_SERVICE }}
+        run: |
+          APP="${APP_DIR:-/opt/avatar-video-creator}"
+          SVC="${SERVICE:-avatar-video-creator}"
+          ssh -o BatchMode=yes "${EC2_USER}@${EC2_HOST}" \
+            "cd ${APP} && APP_DIR=${APP} SERVICE=${SVC} ./scripts/deploy_on_ec2.sh"

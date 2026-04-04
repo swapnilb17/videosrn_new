@@ -1,0 +1,1232 @@
+import asyncio
+import errno
+import logging
+import os
+import shutil
+import uuid
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from pathlib import Path
+from typing import Annotated, Literal
+
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.middleware.sessions import SessionMiddleware
+
+from app.auth_deps import GoogleUserDep
+from app.auth_google import router as google_auth_router
+from app.config import SETTINGS_DOTENV_PATH, Settings, get_settings
+from app.output_profile import build_visual_settings_from_forms
+from app.db import (
+    create_async_engine_from_settings,
+    create_session_factory,
+    create_tables_if_needed,
+    get_db_session,
+    ping_database,
+)
+from app.job_store import (
+    job_get_media_asset,
+    job_insert_running,
+    job_mark_failed,
+    job_mark_succeeded,
+    job_update_script,
+)
+from app.schemas import GenerateResponse, LanguageCode
+from app.services.branding_logo import save_branding_logo_from_upload
+from app.services.user_assets import (
+    normalize_address_form,
+    save_optional_rgba_png,
+    save_optional_thumbnail_jpeg,
+)
+from app.services.ffmpeg_resolve import resolve_ffprobe, resolve_ffmpeg
+from app.services.gemini_native_image import GeminiNativeImageError, generate_gemini_native_slide_images
+from app.services.google_imagen import GoogleImagenError, generate_imagen_slide_images
+from app.services.vertex_gemini_image import VertexGeminiImageError, generate_vertex_gemini_slide_images
+from app.services.image_prompts import script_visual_segments
+from app.services.mux_mp4 import mux_still_image_and_audio
+from app.services.nano_banana import NanoBananaError, generate_slide_images
+from app.services.s3_storage import S3UploadError, safe_presign_get, upload_job_directory
+from app.services.script_openai import generate_script
+from app.services.slide_image_plan import visibility_by_slide_stem
+from app.services.slide_product_composite import composite_user_product_onto_slide
+from app.services.cta_end_slide import render_dedicated_cta_slide_png
+from app.services.slideshow_video import (
+    audio_duration_seconds,
+    mux_slideshow_with_audio,
+    slideshow_durations_with_cta_coda,
+    trim_mp3_to_max_duration,
+    word_weighted_durations,
+)
+from app.services.title_card import render_title_card
+from app.services.video_thumbnail import attach_thumbnail_to_mp4
+from app.services.video_watermark import FrameOverlayAssets
+from app.services.tts_coqui import synthesize_coqui_sync
+from app.services.tts_elevenlabs import ElevenLabsError, synthesize_elevenlabs
+from app.services.tts_gcp import (
+    GoogleTtsError,
+    list_google_tts_voices_detail,
+    synthesize_google_tts_conversational_sync,
+    synthesize_google_tts_preview_sync,
+    synthesize_google_tts_sync,
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+# httpx logs full URLs at INFO (Generative Language embeds ?key=); avoid leaking API keys in logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+
+
+def _rate_limit_key(request: Request) -> str:
+    xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if xff:
+        return xff
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+_limiter_bootstrap = get_settings()
+limiter = Limiter(key_func=_rate_limit_key)
+
+
+def load_settings() -> Settings:
+    """Hook for tests: patch `app.main.load_settings` instead of `get_settings`."""
+    return get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    logger.info(
+        "Imagen: vertex=%s process_env_IMAGEN_MODEL=%r configured=%r effective_for_api=%r (dotenv %s)",
+        settings.imagen_use_vertex,
+        os.environ.get("IMAGEN_MODEL", "(unset)"),
+        (settings.imagen_model or "").strip() or "(empty)",
+        settings.imagen_model_effective(),
+        SETTINGS_DOTENV_PATH,
+    )
+    if settings.google_tts_is_configured():
+        logger.info(
+            "Google Cloud TTS enabled (GOOGLE_TTS_USE_ADC=%s, GOOGLE_TTS_CREDENTIALS_JSON=%r)",
+            settings.google_tts_use_adc,
+            (settings.google_tts_credentials_json_path or "").strip() or None,
+        )
+    elif not settings.elevenlabs_is_configured():
+        logger.warning(
+            "Voice uses Coqui only (Google TTS and ElevenLabs not configured). "
+            "Marathi/Hindi narration often logs missing Devanagari characters; enable Cloud Text-to-Speech: "
+            "set GOOGLE_TTS_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS to a service account JSON "
+            "(roles/cloudtexttospeech.user), or on GCP/EC2 with workload/instance identity set "
+            "GOOGLE_TTS_USE_ADC=true."
+        )
+    if settings.persistence_enabled():
+        engine = create_async_engine_from_settings(settings)
+        if "sqlite" in (settings.database_url or "").lower():
+            await create_tables_if_needed(engine)
+        app.state.db_engine = engine
+        app.state.session_factory = create_session_factory(engine)
+    else:
+        app.state.db_engine = None
+        app.state.session_factory = None
+    yield
+    eng = getattr(app.state, "db_engine", None)
+    if eng is not None:
+        await eng.dispose()
+
+
+app = FastAPI(
+    title="Avatar Video Creator",
+    lifespan=lifespan,
+    docs_url="/docs" if _limiter_bootstrap.openapi_enabled else None,
+    redoc_url="/redoc" if _limiter_bootstrap.openapi_enabled else None,
+    openapi_url="/openapi.json" if _limiter_bootstrap.openapi_enabled else None,
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+_oauth_bootstrap = get_settings()
+if _oauth_bootstrap.google_oauth_enabled():
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=_oauth_bootstrap.session_secret.strip(),
+        same_site="lax",
+        https_only=_oauth_bootstrap.session_cookie_https_only,
+    )
+
+app.include_router(google_auth_router)
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+
+def _validate_persistence_config(settings: Settings) -> None:
+    d = bool((settings.database_url or "").strip())
+    s3 = bool((settings.s3_bucket or "").strip() and (settings.s3_region or "").strip())
+    if d and not s3:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL is set but S3_BUCKET and S3_REGION must also be set.",
+        )
+    if s3 and not d:
+        raise HTTPException(
+            status_code=500,
+            detail="S3_BUCKET/S3_REGION are set but DATABASE_URL is missing.",
+        )
+
+
+def _cleanup_job_dir(path_str: str) -> None:
+    p = Path(path_str)
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+
+
+def _media_file(settings: Settings, job_id: str, filename: str) -> Path:
+    allowed = frozenset({"voiceover.mp3", "output.mp4"})
+    if filename not in allowed:
+        raise HTTPException(status_code=404, detail="Unknown asset")
+    if not job_id or "/" in job_id or job_id in (".", ".."):
+        raise HTTPException(status_code=404, detail="Invalid job")
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Invalid job") from None
+    root = settings.artifact_root.resolve()
+    job_dir = (root / job_id).resolve()
+    try:
+        job_dir.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Invalid job") from None
+    if not job_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Job not found")
+    path = (job_dir / filename).resolve()
+    try:
+        path.relative_to(job_dir)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Invalid path") from None
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File not ready")
+    return path
+
+
+@app.get("/")
+async def index_page():
+    index = _STATIC_DIR / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=404, detail="UI not installed")
+    return FileResponse(index, media_type="text/html")
+
+
+def _download_name_for_media(job_id: str, filename: str) -> str:
+    if filename == "output.mp4":
+        return f"learncast-{job_id}.mp4"
+    if filename == "voiceover.mp3":
+        return f"learncast-{job_id}.mp3"
+    return filename
+
+
+@app.get("/media/{job_id}/{filename}")
+async def serve_media(
+    request: Request,
+    job_id: str,
+    filename: str,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    attachment: Annotated[bool, Query()] = False,
+):
+    settings = load_settings()
+    download_as = _download_name_for_media(job_id, filename) if attachment else None
+    if settings.persistence_enabled():
+        if session is None:
+            raise HTTPException(status_code=503, detail="Database session unavailable")
+        allowed = frozenset({"voiceover.mp3", "output.mp4"})
+        if filename not in allowed:
+            raise HTTPException(status_code=404, detail="Unknown asset")
+        try:
+            job_uuid = uuid.UUID(job_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Invalid job") from None
+        s3_key, owner_sub = await job_get_media_asset(session, job_uuid, filename)
+        if not s3_key:
+            raise HTTPException(status_code=404, detail="File not ready")
+        if settings.google_oauth_enabled():
+            sess_user = request.session.get("user")
+            sub = sess_user.get("sub") if isinstance(sess_user, dict) else None
+            if not isinstance(sub, str) or not sub.strip():
+                raise HTTPException(
+                    status_code=401,
+                    detail="Sign in required to access this media.",
+                )
+            if owner_sub and owner_sub != sub:
+                raise HTTPException(status_code=403, detail="Not allowed to access this media.")
+        try:
+            url = await asyncio.to_thread(
+                safe_presign_get,
+                settings,
+                s3_key,
+                attachment=attachment,
+                download_filename=download_as,
+            )
+        except S3UploadError as e:
+            logger.warning("presign failed job=%s file=%s: %s", job_id, filename, e)
+            raise HTTPException(status_code=503, detail="Could not sign media URL") from e
+        return RedirectResponse(url=url, status_code=302)
+    path = _media_file(settings, job_id, filename)
+    media = "audio/mpeg" if filename.endswith(".mp3") else "video/mp4"
+    if attachment and download_as:
+        return FileResponse(
+            path,
+            media_type=media,
+            filename=download_as,
+            content_disposition_type="attachment",
+        )
+    return FileResponse(path, media_type=media, filename=filename)
+
+
+@app.get("/health")
+async def health(request: Request):
+    settings = load_settings()
+    body: dict = {
+        "status": "ok",
+        "openai_ready": bool((settings.openai_api_key or "").strip()),
+        "elevenlabs_ready": settings.elevenlabs_is_configured(),
+        "google_tts_ready": settings.google_tts_is_configured(),
+        "ffmpeg_ready": bool(resolve_ffmpeg(explicit=settings.ffmpeg_path or None)),
+        "ffprobe_ready": bool(resolve_ffprobe(settings.ffmpeg_path)),
+        "gemini_imagen_ready": settings.gemini_imagen_configured(),
+        "gemini_native_image_ready": settings.gemini_native_image_configured(),
+        "vertex_gemini_image_ready": settings.vertex_gemini_image_configured(),
+        "vertex_imagen_ready": settings.vertex_imagen_configured(),
+        "nano_banana_ready": settings.nano_banana_configured(),
+        "persistence_enabled": settings.persistence_enabled(),
+        "google_oauth_enabled": settings.google_oauth_enabled(),
+    }
+    if settings.google_oauth_enabled():
+        u = request.session.get("user")
+        body["google_user_email"] = (
+            u.get("email") if isinstance(u, dict) and isinstance(u.get("email"), str) else None
+        )
+    else:
+        body["google_user_email"] = None
+    if settings.persistence_enabled():
+        db_ok = False
+        db_err_type: str | None = None
+        factory = getattr(request.app.state, "session_factory", None)
+        if factory is not None:
+            async with factory() as s:
+                try:
+                    await ping_database(s)
+                    db_ok = True
+                except Exception as e:
+                    logger.exception("database ping failed")
+                    cause = getattr(e, "__cause__", None)
+                    db_err_type = (
+                        f"{type(e).__name__}"
+                        f" ({type(cause).__name__})"
+                        if cause is not None
+                        else type(e).__name__
+                    )
+        body["database_ready"] = db_ok
+        if not db_ok and db_err_type is not None and settings.health_expose_internals:
+            body["database_error_type"] = db_err_type
+    return body
+
+
+def _parse_language_form(raw: str) -> LanguageCode:
+    v = (raw or "en").strip().lower()
+    if v not in ("en", "hi", "mr"):
+        raise HTTPException(status_code=400, detail="language must be en, hi, or mr")
+    return v  # type: ignore[return-value]
+
+
+@app.get("/api/tts/voices")
+@limiter.limit("60/minute")
+async def api_tts_voices(
+    request: Request,
+    _google_user: GoogleUserDep,
+    language: str = Query(..., min_length=2, max_length=8),
+):
+    settings = load_settings()
+    if not settings.google_tts_is_configured():
+        return {
+            "available": False,
+            "language": (language or "en").strip().lower()[:8],
+            "locale": None,
+            "voices": [],
+            "counts": {"male": 0, "female": 0, "neutral": 0, "unspecified": 0},
+        }
+    lang = _parse_language_form(language)
+    data = await asyncio.to_thread(list_google_tts_voices_detail, settings, lang)
+    data["available"] = True
+    return data
+
+
+@app.get("/api/tts/preview.mp3")
+@limiter.limit(_limiter_bootstrap.rate_limit_tts_preview_effective())
+async def api_tts_preview_mp3(
+    request: Request,
+    _google_user: GoogleUserDep,
+    voice: str = Query(..., min_length=4, max_length=120),
+    language: str = Query(..., min_length=2, max_length=8),
+):
+    settings = load_settings()
+    if not settings.google_tts_is_configured():
+        raise HTTPException(status_code=503, detail="Voice preview is not available on this server.")
+    lang = _parse_language_form(language)
+    v = (voice or "").strip()
+
+    def _synth_preview() -> bytes:
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            p = Path(tmp.name)
+        try:
+            synthesize_google_tts_preview_sync(settings, lang, v, p)
+            return p.read_bytes()
+        finally:
+            p.unlink(missing_ok=True)
+
+    try:
+        blob = await asyncio.to_thread(_synth_preview)
+    except GoogleTtsError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return Response(
+        content=blob,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+ALLOWED_TARGET_DURATION_SECONDS: frozenset[int] = frozenset(
+    {30, 59, 90, 120, 180, 240, 300}
+)
+
+
+def _parse_target_duration_form(raw: str | None) -> int:
+    s = (raw or "").strip()
+    if not s:
+        return 59
+    try:
+        v = int(s, 10)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="target_duration_seconds must be an integer",
+        ) from None
+    if v not in ALLOWED_TARGET_DURATION_SECONDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "target_duration_seconds must be one of: "
+                "30, 59, 90, 120, 180, 240, 300"
+            ),
+        )
+    return v
+
+
+def _parse_enhance_motion_form(raw: str | None) -> bool:
+    """Optional subtle Ken Burns zoom on slides; independent of target duration."""
+    if raw is None:
+        return False
+    s = str(raw).strip().lower()
+    return s in ("1", "true", "yes", "on")
+
+
+@app.post("/generate", response_model=GenerateResponse)
+@limiter.limit(_limiter_bootstrap.rate_limit_generate_effective())
+async def generate(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    _google_user: GoogleUserDep,
+    topic: Annotated[str, Form(min_length=1, max_length=500)],
+    language: Annotated[str, Form()] = "en",
+    target_duration_seconds: Annotated[str, Form()] = "59",
+    enhance_motion: Annotated[str, Form()] = "",
+    google_tts_voice: Annotated[str, Form()] = "",
+    logo: UploadFile | None = File(None),
+    product_image: UploadFile | None = File(None),
+    cta_image: UploadFile | None = File(None),
+    thumbnail_image: UploadFile | None = File(None),
+    address: Annotated[str, Form()] = "",
+    content_format: Annotated[str, Form()] = "",
+    output_quality: Annotated[str, Form()] = "",
+):
+    settings = load_settings()
+    _validate_persistence_config(settings)
+    try:
+        visual_settings, applied_content_format, applied_output_quality = build_visual_settings_from_forms(
+            settings,
+            content_format,
+            output_quality,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    job_id = str(uuid.uuid4())
+    job_uuid = uuid.UUID(job_id)
+    job_dir = settings.artifact_root / job_id
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            logger.error("job=%s artifact_root full: %s", job_id, job_dir)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Server disk is full (cannot write under ARTIFACT_ROOT). "
+                    "Free space or enlarge the EBS volume, then retry."
+                ),
+            ) from e
+        raise
+
+    owner_sub: str | None = None
+    if _google_user and isinstance(_google_user.get("sub"), str):
+        t = _google_user["sub"].strip()
+        if t:
+            owner_sub = t
+
+    lang = _parse_language_form(language)
+    target_sec = _parse_target_duration_form(target_duration_seconds)
+    enhance_kb = _parse_enhance_motion_form(enhance_motion)
+    gcp_voice_choice = (google_tts_voice or "").strip() or None
+
+    if enhance_kb and not settings.google_tts_is_configured():
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Enhance mode uses a two-voice dialogue and needs multi-voice narration enabled on "
+                "this server. Turn off Enhance for a single narrator, or ask your administrator "
+                "to enable it."
+            ),
+        )
+
+    branding_file = job_dir / "branding_logo.png"
+    branding_applied = await save_branding_logo_from_upload(logo, branding_file)
+    address_norm = normalize_address_form(address)
+    if address_norm:
+        (job_dir / "user_address.txt").write_text(address_norm, encoding="utf-8")
+
+    product_file = job_dir / "user_product.png"
+    product_applied = await save_optional_rgba_png(
+        product_image,
+        product_file,
+        label="Product image",
+    )
+    cta_file = job_dir / "user_cta.png"
+    cta_applied = await save_optional_rgba_png(cta_image, cta_file, label="CTA image")
+    thumb_file = job_dir / "user_thumbnail.jpg"
+    thumbnail_applied = await save_optional_thumbnail_jpeg(thumbnail_image, thumb_file)
+
+    overlay_assets = FrameOverlayAssets(
+        branding_logo_path=branding_file if branding_applied else None,
+        product_image_path=product_file if product_applied else None,
+        cta_image_path=cta_file if cta_applied else None,
+        address_text=address_norm,
+    )
+
+    persist = settings.persistence_enabled() and session is not None
+
+    logger.info(
+        "job=%s topic=%s language=%s target_sec=%s enhance_motion=%s branding=%s persist=%s "
+        "video=%sx%s content_format=%s output_quality=%s",
+        job_id,
+        topic[:80],
+        lang,
+        target_sec,
+        enhance_kb,
+        branding_applied,
+        persist,
+        visual_settings.video_width,
+        visual_settings.video_height,
+        applied_content_format or "-",
+        applied_output_quality or "-",
+    )
+
+    async def _fail(msg: str) -> None:
+        if persist and session is not None:
+            await job_mark_failed(session, job_uuid, msg)
+
+    if persist:
+        await job_insert_running(
+            session,
+            job_uuid,
+            topic=topic,
+            language=lang,
+            branding_logo_applied=branding_applied,
+            owner_sub=owner_sub,
+        )
+
+    try:
+        script = await generate_script(
+            settings,
+            topic,
+            lang,
+            target_duration_seconds=target_sec,
+            conversational=enhance_kb,
+        )
+    except ValueError as e:
+        await _fail(str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except RuntimeError as e:
+        await _fail(str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    if persist and session is not None:
+        await job_update_script(session, job_uuid, script.model_dump())
+
+    script_path = job_dir / "script.json"
+    script_path.write_text(script.model_dump_json(indent=2), encoding="utf-8")
+
+    mp3_path = job_dir / "voiceover.mp3"
+    tts_provider: Literal["google", "elevenlabs", "coqui"] = "coqui"
+
+    async def _tts_coqui_fallback(
+        primary_err: Exception,
+        primary_label: str,
+        fix_hint: str,
+    ) -> None:
+        nonlocal tts_provider
+        try:
+            await asyncio.to_thread(
+                synthesize_coqui_sync,
+                settings,
+                script.full_script_plain,
+                lang,
+                mp3_path,
+            )
+            tts_provider = "coqui"
+        except Exception as ce:
+            logger.exception(
+                "job=%s Coqui fallback failed %s=%s Coqui=%s",
+                job_id,
+                primary_label,
+                primary_err,
+                ce,
+            )
+            detail = (
+                f"Voice generation failed. {primary_label}: {primary_err}. "
+                f"Fallback (Coqui): {ce}. {fix_hint}"
+            )
+            await _fail(detail)
+            hint = str(ce).strip()
+            if len(hint) > 600:
+                hint = hint[:597] + "..."
+            raise HTTPException(
+                status_code=503,
+                detail=hint or "Voice generation failed. Check server logs.",
+            ) from ce
+
+    if settings.google_tts_is_configured():
+        try:
+            if enhance_kb and script.conversational_turns:
+                await asyncio.to_thread(
+                    synthesize_google_tts_conversational_sync,
+                    settings,
+                    script.conversational_turns,
+                    lang,
+                    mp3_path,
+                    user_voice=gcp_voice_choice,
+                )
+            else:
+                await asyncio.to_thread(
+                    synthesize_google_tts_sync,
+                    settings,
+                    script.full_script_plain,
+                    lang,
+                    mp3_path,
+                    voice_name=gcp_voice_choice,
+                )
+            tts_provider = "google"
+        except GoogleTtsError as e:
+            logger.warning("job=%s Google Cloud TTS failed, trying Coqui: %s", job_id, e)
+            await _tts_coqui_fallback(
+                e,
+                "Primary voice service",
+                "Fix: check server voice configuration and logs. "
+                "Or install local TTS: pip install -e '.[coqui]'",
+            )
+    elif settings.elevenlabs_is_configured():
+        try:
+            await synthesize_elevenlabs(
+                settings,
+                script.full_script_plain,
+                lang,
+                mp3_path,
+            )
+            tts_provider = "elevenlabs"
+        except ElevenLabsError as e:
+            logger.warning("job=%s ElevenLabs failed, trying Coqui: %s", job_id, e)
+            await _tts_coqui_fallback(
+                e,
+                "ElevenLabs",
+                "Fix: set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env (see .env.example), "
+                "restart the server, or install local TTS with: pip install -e '.[coqui]'",
+            )
+    else:
+        try:
+            await asyncio.to_thread(
+                synthesize_coqui_sync,
+                settings,
+                script.full_script_plain,
+                lang,
+                mp3_path,
+            )
+            tts_provider = "coqui"
+        except Exception as ce:
+            logger.exception("job=%s Coqui TTS failed: %s", job_id, ce)
+            detail = (
+                f"Voice generation failed (Coqui): {ce}. "
+                "Configure cloud voice, ElevenLabs, or install local TTS with: pip install -e '.[coqui]'"
+            )
+            await _fail(detail)
+            hint = str(ce).strip()
+            if len(hint) > 600:
+                hint = hint[:597] + "..."
+            raise HTTPException(
+                status_code=503,
+                detail=hint or "Voice generation failed. Check server logs.",
+            ) from ce
+
+    mp3_path = await asyncio.to_thread(
+        trim_mp3_to_max_duration,
+        mp3_path,
+        float(target_sec),
+        ffmpeg_explicit=settings.ffmpeg_path,
+    )
+
+    mp4_path = job_dir / "output.mp4"
+    visual_mode: Literal[
+        "gemini_native_image_slideshow",
+        "vertex_gemini_image_slideshow",
+        "google_imagen_slideshow",
+        "nano_banana_slideshow",
+        "title_card",
+    ] = "title_card"
+    visual_detail: str | None = None
+
+    if not settings.slide_visuals_configured():
+        visual_detail = (
+            "No slide API configured. Add GEMINI_API_KEY for Nano Banana 2 (native) and/or Imagen, "
+            "enable Vertex Imagen (IMAGEN_USE_VERTEX), or set NANO_BANANA_API_KEY for the alternate provider."
+        )
+
+    image_paths: list[Path] | None = None
+    slides_dir = job_dir / "slides"
+    product_ref_path = product_file if product_applied and product_file.is_file() else None
+    used_multimodal_product_ref = False
+
+    if settings.gemini_native_image_configured():
+        try:
+            image_paths = await generate_gemini_native_slide_images(
+                visual_settings,
+                topic,
+                script,
+                lang,
+                slides_dir,
+                reserve_product_hero_zone=product_applied and product_ref_path is None,
+                product_reference_path=product_ref_path,
+            )
+            visual_mode = "gemini_native_image_slideshow"
+        except (GeminiNativeImageError, RuntimeError, ValueError) as e:
+            logger.warning("job=%s Gemini native image (Nano Banana 2) slides failed: %s", job_id, e)
+            visual_detail = f"Gemini native image: {e}"[:600]
+        else:
+            used_multimodal_product_ref = bool(product_ref_path)
+
+    if image_paths is None and settings.vertex_gemini_image_configured():
+        try:
+            image_paths = await generate_vertex_gemini_slide_images(
+                visual_settings,
+                topic,
+                script,
+                lang,
+                slides_dir,
+                reserve_product_hero_zone=product_applied and product_ref_path is None,
+                product_reference_path=product_ref_path,
+            )
+            visual_mode = "vertex_gemini_image_slideshow"
+        except (VertexGeminiImageError, RuntimeError, ValueError) as e:
+            logger.warning("job=%s Vertex Gemini image slides failed: %s", job_id, e)
+            extra = f"Vertex Gemini image: {e}"[:600]
+            visual_detail = f"{visual_detail} · {extra}" if visual_detail else extra
+        else:
+            used_multimodal_product_ref = bool(product_ref_path)
+
+    if image_paths is None and settings.gemini_imagen_configured():
+        try:
+            image_paths = await generate_imagen_slide_images(
+                visual_settings,
+                topic,
+                script,
+                lang,
+                slides_dir,
+                reserve_product_hero_zone=product_applied,
+            )
+            visual_mode = "google_imagen_slideshow"
+        except (GoogleImagenError, RuntimeError, ValueError) as e:
+            logger.warning("job=%s Google Imagen slides failed: %s", job_id, e)
+            extra = f"Imagen: {e}"[:600]
+            visual_detail = f"{visual_detail} · {extra}" if visual_detail else extra
+        else:
+            used_multimodal_product_ref = False
+
+    if image_paths is None and settings.nano_banana_configured():
+        try:
+            image_paths = await generate_slide_images(
+                visual_settings,
+                topic,
+                script,
+                lang,
+                slides_dir,
+                reserve_product_hero_zone=product_applied,
+            )
+            visual_mode = "nano_banana_slideshow"
+        except (NanoBananaError, RuntimeError, ValueError) as e:
+            logger.warning("job=%s Nano Banana slides failed: %s", job_id, e)
+            extra = f"Nano Banana: {e}"[:600]
+            visual_detail = f"{visual_detail} · {extra}" if visual_detail else extra
+        else:
+            used_multimodal_product_ref = False
+
+    if image_paths is not None:
+        slideshow_overlay = overlay_assets
+        if product_applied and product_file.is_file():
+            if not used_multimodal_product_ref:
+                stem_vis = visibility_by_slide_stem(
+                    topic,
+                    script_visual_segments(script),
+                    script.visual_segments_en,
+                )
+                for sp in image_paths:
+                    if stem_vis.get(sp.stem, False):
+                        await asyncio.to_thread(composite_user_product_onto_slide, sp, product_file)
+            slideshow_overlay = replace(overlay_assets, product_image_path=None)
+        try:
+            ffprobe = resolve_ffprobe(settings.ffmpeg_path)
+            if not ffprobe:
+                raise RuntimeError(
+                    "ffprobe not found (usually installed with ffmpeg). "
+                    "Install ffmpeg fully or fix FFMPEG_PATH."
+                )
+            total_audio = audio_duration_seconds(ffprobe, mp3_path)
+            segment_texts = [t for _, t in script_visual_segments(script)]
+            paths_mux = list(image_paths)
+            dedicated_cta = False
+            if cta_applied and cta_file.is_file():
+                durs_script, cta_dur = slideshow_durations_with_cta_coda(
+                    segment_texts, total_audio
+                )
+                if cta_dur >= 0.5:
+                    cta_slide_path = job_dir / "slide_cta_dedicated.png"
+                    await asyncio.to_thread(
+                        render_dedicated_cta_slide_png,
+                        cta_slide_path,
+                        visual_settings.video_width,
+                        visual_settings.video_height,
+                        cta_file,
+                    )
+                    paths_mux.append(cta_slide_path)
+                    durs = [*durs_script, cta_dur]
+                    dedicated_cta = True
+                    slideshow_overlay = replace(slideshow_overlay, cta_image_path=None)
+                else:
+                    durs = word_weighted_durations(segment_texts, total_audio)
+            else:
+                durs = word_weighted_durations(segment_texts, total_audio)
+            mux_slideshow_with_audio(
+                paths_mux,
+                durs,
+                mp3_path,
+                mp4_path,
+                visual_settings.video_width,
+                visual_settings.video_height,
+                ffmpeg_explicit=settings.ffmpeg_path,
+                overlay_assets=slideshow_overlay,
+                ken_burns=enhance_kb,
+                final_slide_is_dedicated_cta=dedicated_cta,
+            )
+        except (RuntimeError, ValueError) as e:
+            logger.warning(
+                "job=%s slideshow mux failed, using title card: %s",
+                job_id,
+                e,
+            )
+            image_paths = None
+            visual_mode = "title_card"
+            visual_detail = f"Slide video assembly: {e}"[:600]
+
+    if image_paths is None:
+        png_path = job_dir / "title.png"
+        render_title_card(visual_settings, topic, lang, png_path)
+        try:
+            mux_still_image_and_audio(
+                png_path,
+                mp3_path,
+                mp4_path,
+                ffmpeg_explicit=settings.ffmpeg_path,
+                video_width=visual_settings.video_width,
+                video_height=visual_settings.video_height,
+                overlay_assets=overlay_assets,
+            )
+        except RuntimeError as e:
+            await _fail(str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    thumbnail_attached = False
+    if thumbnail_applied and thumb_file.is_file():
+        try:
+            await asyncio.to_thread(
+                attach_thumbnail_to_mp4,
+                mp4_path,
+                thumb_file,
+                ffmpeg_explicit=settings.ffmpeg_path,
+            )
+            thumbnail_attached = True
+        except Exception as e:
+            logger.warning("job=%s embed thumbnail failed: %s", job_id, e)
+
+    logger.info(
+        "job=%s encode complete visual_mode=%s tts_provider=%s slide_count=%s",
+        job_id,
+        visual_mode,
+        tts_provider,
+        len(image_paths) if image_paths is not None else 0,
+    )
+
+    if visual_mode != "title_card":
+        visual_detail = None
+
+    if persist and session is not None:
+        try:
+            s3_keys = await asyncio.to_thread(upload_job_directory, settings, job_dir, job_id)
+            await job_mark_succeeded(
+                session,
+                job_uuid,
+                tts_provider=tts_provider,
+                visual_mode=visual_mode,
+                visual_detail=visual_detail,
+                branding_logo_applied=branding_applied,
+                s3_keys=s3_keys,
+            )
+        except S3UploadError as e:
+            logger.exception("job=%s S3 upload failed: %s", job_id, e)
+            await _fail(str(e))
+            raise HTTPException(
+                status_code=503,
+                detail="Video storage failed. Try again later.",
+            ) from e
+        if settings.artifact_cleanup_after_s3:
+            background_tasks.add_task(_cleanup_job_dir, str(job_dir.resolve()))
+
+    return GenerateResponse(
+        job_id=job_id,
+        target_duration_seconds=target_sec,
+        script=script,
+        mp3_url=f"/media/{job_id}/voiceover.mp3",
+        mp4_url=f"/media/{job_id}/output.mp4",
+        video_width=visual_settings.video_width,
+        video_height=visual_settings.video_height,
+        content_format_applied=applied_content_format,
+        output_quality_applied=applied_output_quality,
+        tts_provider=tts_provider,
+        visual_mode=visual_mode,
+        visual_detail=visual_detail,
+        branding_logo_applied=branding_applied,
+        product_image_applied=product_applied,
+        cta_image_applied=cta_applied,
+        address_applied=bool(address_norm),
+        thumbnail_attached=thumbnail_attached,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Media routes for standalone image / Veo3 video / voice generation
+# ---------------------------------------------------------------------------
+
+
+@app.get("/media/img/{job_dir}/{filename}")
+async def serve_generated_image(job_dir: str, filename: str):
+    """Serve standalone generated images."""
+    settings = get_settings()
+    file_path = settings.artifact_root / job_dir / filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(file_path, media_type="image/png")
+
+
+@app.get("/media/veo3/{job_dir}/{filename}")
+async def serve_veo3_video(job_dir: str, filename: str):
+    """Serve Veo3 generated videos."""
+    settings = get_settings()
+    file_path = settings.artifact_root / job_dir / filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(file_path, media_type="video/mp4")
+
+
+@app.get("/media/voice/{job_id}/{filename}")
+async def serve_generated_voice(job_id: str, filename: str):
+    """Serve standalone generated voice audio."""
+    settings = get_settings()
+    file_path = settings.artifact_root / f"voice_{job_id}" / filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return FileResponse(file_path, media_type="audio/mpeg")
+
+
+# ---------------------------------------------------------------------------
+# Standalone generation endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/generate-image")
+async def api_generate_image(
+    prompt: Annotated[str, Form()],
+    style: Annotated[str, Form()] = "photorealistic",
+    aspect_ratio: Annotated[str, Form()] = "1:1",
+    count: Annotated[int, Form()] = 1,
+):
+    """Standalone image generation using 3-tier model failover."""
+    from app.services.standalone_image_gen import generate_standalone_image, ImageGenResult
+
+    settings = get_settings()
+    prompt_clean = (prompt or "").strip()
+    if not prompt_clean:
+        raise HTTPException(status_code=422, detail="prompt is required")
+
+    count = max(1, min(count, 4))
+
+    style_prefix = {
+        "photorealistic": "Photorealistic cinematic photograph, shot on professional cinema camera, shallow depth of field, natural lighting. ",
+        "cinematic": "Cinematic film still, dramatic lighting, anamorphic lens flare, color graded. ",
+        "illustration": "Digital illustration, clean lines, vibrant colors, detailed artwork. ",
+        "3d_render": "3D rendered scene, realistic materials, global illumination, octane render quality. ",
+        "anime": "Anime-style illustration, vibrant colors, expressive, detailed character art. ",
+        "watercolor": "Watercolor painting, soft washes, visible brush strokes, artistic and dreamy. ",
+    }.get(style, "")
+
+    full_prompt = f"{style_prefix}{prompt_clean}. No text, captions, watermarks, or logos in the image."
+
+    images = []
+    errors = []
+    for i in range(count):
+        try:
+            result = await generate_standalone_image(
+                settings, full_prompt, aspect_ratio=aspect_ratio,
+            )
+            images.append({
+                "url": f"/media/img/{result.path.parent.name}/{result.path.name}",
+                "width": result.width,
+                "height": result.height,
+                "model": result.model,
+            })
+        except Exception as e:
+            logger.exception("generate-image failed (image %s): %s", i + 1, e)
+            errors.append(str(e))
+
+    if not images:
+        raise HTTPException(
+            status_code=503,
+            detail=f"All image generation attempts failed: {'; '.join(errors)}",
+        )
+
+    return {
+        "job_id": uuid.uuid4().hex[:12],
+        "images": images,
+        "prompt_used": full_prompt[:300],
+    }
+
+
+@app.post("/api/photo-to-video")
+async def api_photo_to_video(
+    photo: Annotated[UploadFile, File()],
+    motion_prompt: Annotated[str, Form()] = "",
+    duration: Annotated[int, Form()] = 8,
+    camera_movement: Annotated[str, Form()] = "zoom_in",
+    aspect_ratio: Annotated[str, Form()] = "16:9",
+):
+    """Generate video from a photo using Google Veo3."""
+    from app.services.veo3_video import generate_video_from_image, Veo3Error
+
+    settings = get_settings()
+    image_bytes = await photo.read()
+    if len(image_bytes) < 100:
+        raise HTTPException(status_code=422, detail="Photo file is empty or too small")
+
+    camera_desc = {
+        "pan_left": "smooth camera pan from right to left",
+        "pan_right": "smooth camera pan from left to right",
+        "zoom_in": "slow cinematic zoom in towards the subject",
+        "zoom_out": "slow cinematic zoom out revealing the full scene",
+        "orbit": "smooth orbital camera movement around the subject",
+        "dolly": "forward dolly movement towards the subject",
+        "static": "static camera with subtle ambient motion in the scene",
+    }.get(camera_movement, "gentle camera movement")
+
+    motion_text = (motion_prompt or "").strip()
+    prompt = f"Bring this photo to life with {camera_desc}."
+    if motion_text:
+        prompt += f" {motion_text}."
+    prompt += " Photorealistic, cinematic quality, smooth natural motion."
+
+    try:
+        video_path = await generate_video_from_image(
+            settings,
+            image_bytes,
+            prompt,
+            duration_seconds=duration,
+            aspect_ratio=aspect_ratio,
+        )
+    except Veo3Error as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("photo-to-video failed: %s", e)
+        raise HTTPException(status_code=500, detail="Video generation failed") from e
+
+    job_dir_name = video_path.parent.name
+    return {
+        "job_id": job_dir_name,
+        "video_url": f"/media/veo3/{job_dir_name}/{video_path.name}",
+        "duration_seconds": duration,
+        "width": 1920 if aspect_ratio == "16:9" else (1080 if aspect_ratio == "9:16" else 1080),
+        "height": 1080 if aspect_ratio == "16:9" else (1920 if aspect_ratio == "9:16" else 1080),
+        "model": "veo-3.0",
+    }
+
+
+@app.post("/api/image-to-ad")
+async def api_image_to_ad(
+    product_image: Annotated[UploadFile, File()],
+    ad_copy: Annotated[str, Form()] = "",
+    cta_text: Annotated[str, Form()] = "",
+    template: Annotated[str, Form()] = "product_showcase",
+    duration: Annotated[int, Form()] = 30,
+    aspect_ratio: Annotated[str, Form()] = "9:16",
+    brand_color: Annotated[str, Form()] = "#8b5cf6",
+    logo: Annotated[UploadFile | None, File()] = None,
+):
+    """Generate an ad video from a product image using Google Veo3."""
+    from app.services.veo3_video import generate_video_from_image, Veo3Error
+
+    settings = get_settings()
+    image_bytes = await product_image.read()
+    if len(image_bytes) < 100:
+        raise HTTPException(status_code=422, detail="Product image is empty or too small")
+
+    template_desc = {
+        "product_showcase": "cinematic product showcase with dynamic camera angles revealing the product from multiple perspectives",
+        "before_after": "transformation reveal showing the product's impact with a before and after transition",
+        "feature_highlight": "focused feature highlight zooming into key product details one by one",
+        "testimonial": "social proof style presentation with the product as the hero element",
+        "sale_promo": "high-energy promotional video with urgency-driven motion and dynamic transitions",
+    }.get(template, "cinematic product showcase")
+
+    prompt = f"Create a {template_desc} for this product."
+    if ad_copy:
+        prompt += f" The ad message: {ad_copy.strip()[:200]}."
+    if cta_text:
+        prompt += f" End with a call to action: {cta_text.strip()[:50]}."
+    prompt += " Professional advertising quality, smooth transitions, premium feel."
+
+    try:
+        video_path = await generate_video_from_image(
+            settings,
+            image_bytes,
+            prompt,
+            duration_seconds=min(duration, 15),
+            aspect_ratio=aspect_ratio,
+        )
+    except Veo3Error as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("image-to-ad failed: %s", e)
+        raise HTTPException(status_code=500, detail="Ad video generation failed") from e
+
+    job_dir_name = video_path.parent.name
+    return {
+        "job_id": job_dir_name,
+        "video_url": f"/media/veo3/{job_dir_name}/{video_path.name}",
+        "duration_seconds": duration,
+        "width": 1920 if aspect_ratio == "16:9" else (1080 if aspect_ratio == "9:16" else 1080),
+        "height": 1080 if aspect_ratio == "16:9" else (1920 if aspect_ratio == "9:16" else 1080),
+        "model": "veo-3.0",
+    }
+
+
+@app.post("/api/generate-voice")
+async def api_generate_voice(
+    text: Annotated[str, Form()],
+    language: Annotated[str, Form()] = "en",
+    voice: Annotated[str, Form()] = "",
+    speed: Annotated[float, Form()] = 1.0,
+):
+    """Generate speech audio from text using Google TTS / ElevenLabs."""
+    settings = get_settings()
+    text_clean = (text or "").strip()
+    if not text_clean:
+        raise HTTPException(status_code=422, detail="text is required")
+    if len(text_clean) > 5000:
+        raise HTTPException(status_code=422, detail="text too long (max 5000 chars)")
+
+    job_id = uuid.uuid4().hex[:12]
+    output_dir = settings.artifact_root / f"voice_{job_id}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = output_dir / f"audio_{job_id}.mp3"
+
+    tts_provider = "none"
+    lang = _parse_language_form(language)
+
+    if settings.google_tts_is_configured():
+        try:
+            patched_settings = settings.model_copy(update={
+                "google_tts_speaking_rate": speed,
+            })
+            await asyncio.to_thread(
+                synthesize_google_tts_sync,
+                patched_settings,
+                text_clean,
+                lang,
+                audio_path,
+                voice_name=voice if voice else None,
+            )
+            if audio_path.is_file() and audio_path.stat().st_size > 100:
+                tts_provider = "google"
+        except Exception as e:
+            logger.warning("generate-voice Google TTS failed: %s", e)
+
+    if tts_provider == "none" and settings.elevenlabs_is_configured():
+        try:
+            await synthesize_elevenlabs(settings, text_clean, lang, audio_path)
+            if audio_path.is_file() and audio_path.stat().st_size > 100:
+                tts_provider = "elevenlabs"
+        except Exception as e:
+            logger.warning("generate-voice ElevenLabs failed: %s", e)
+
+    if tts_provider == "none":
+        raise HTTPException(status_code=503, detail="No TTS provider available")
+
+    duration = 0.0
+    try:
+        ffprobe = resolve_ffprobe(settings.ffmpeg_path)
+        if ffprobe:
+            duration = await asyncio.to_thread(audio_duration_seconds, ffprobe, audio_path)
+    except Exception:
+        pass
+
+    return {
+        "job_id": job_id,
+        "audio_url": f"/media/voice/{job_id}/{audio_path.name}",
+        "duration_seconds": round(duration, 1),
+        "tts_provider": tts_provider,
+        "voice_used": voice or "auto",
+    }

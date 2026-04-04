@@ -1,0 +1,18 @@
+.env
+.DS_Store
+# Local ffmpeg binary (optional; do not commit large binaries)
+/ffmpeg
+/ffmpeg.exe
+/bin/ffmpeg
+/bin/ffmpeg.exe
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest_artifacts/
+data/jobs/
+*.egg-info/
+dist/
+build/
+# Full ffmpeg source tree if present locally (do not commit)
+ffmpeg-8.1/

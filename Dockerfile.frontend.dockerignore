@@ -1,0 +1,15 @@
+node_modules
+.next
+out
+backend/
+.git
+.env
+.env.*
+!.env.docker.example
+gcp-credentials/
+landing-s3-build.zip
+scripts/
+nginx/
+Dockerfile.*
+docker-compose.yml
+*.md

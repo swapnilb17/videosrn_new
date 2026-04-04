@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LearnCast — Topic to video</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css?v=16" />
+  </head>
+  <body class="auth-resolving">
+    <div class="ambient" aria-hidden="true"></div>
+    <div id="auth-loading" class="auth-loading" aria-live="polite" aria-busy="true">
+      <div class="auth-loading-inner">
+        <span class="brand-mark auth-loading-mark" aria-hidden="true"></span>
+        <p class="auth-loading-text">Loading…</p>
+      </div>
+    </div>
+    <div id="auth-gate" class="auth-gate" hidden>
+      <div class="auth-gate-card">
+        <div id="auth-gate-error" class="auth-gate-error" role="alert" hidden></div>
+        <div class="auth-gate-brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h2 class="auth-gate-title">LearnCast</h2>
+            <p class="auth-gate-tagline">Sign in to create learning videos</p>
+          </div>
+        </div>
+        <p class="auth-gate-lead">
+          One quick Google sign-in. After that, you can enter a topic and generate your video.
+        </p>
+        <a href="/auth/google/login" class="btn-google-primary">
+          <span class="btn-google-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path
+                fill="#4285F4"
+                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+              />
+            </svg>
+          </span>
+          Continue with Google
+        </a>
+        <p class="auth-gate-foot">Secure sign-in via Google. Session is used only for this app.</p>
+      </div>
+    </div>
+    <div class="app main-workspace" id="main-workspace">
+      <main class="chat" id="chat" role="log" aria-live="polite" aria-relevant="additions">
+        <header class="header chat-header">
+          <div class="header-top">
+            <div class="brand">
+              <span class="brand-mark" aria-hidden="true"></span>
+              <div class="brand-text">
+                <h1>LearnCast</h1>
+                <p class="tagline">Calm, focused learning videos — from one idea.</p>
+              </div>
+            </div>
+            <div class="header-auth" id="header-auth" hidden>
+              <span class="auth-user" id="auth-user"></span>
+              <a href="/auth/logout" class="btn-auth secondary" id="auth-logout">Sign out</a>
+            </div>
+          </div>
+          <p class="header-hint">
+            Built for clarity: high contrast, readable type, and one clear action at a time.
+          </p>
+          <div id="config-banner" class="config-banner" role="alert" hidden></div>
+        </header>
+      </main>
+
+      <footer class="composer-wrap">
+        <form class="composer" id="form" autocomplete="off">
+          <div class="composer-fields">
+            <div class="composer-row composer-row-main">
+              <label class="field field-lang">
+                <span class="field-label">Language</span>
+                <select id="language" name="language" class="select" aria-describedby="lang-hint">
+                  <option value="en">English</option>
+                  <option value="hi">Hindi</option>
+                  <option value="mr">Marathi</option>
+                </select>
+                <span id="lang-hint" class="sr-only">Choose narration language</span>
+              </label>
+              <label class="field field-grow">
+                <span class="field-label">Your topic</span>
+                <textarea
+                  id="topic"
+                  name="topic"
+                  rows="2"
+                  maxlength="500"
+                  required
+                  placeholder="e.g. Why do we dream? How does photosynthesis work?"
+                  class="textarea"
+                ></textarea>
+              </label>
+            </div>
+          </div>
+          <div class="composer-actions">
+            <p class="status" id="status" role="status"></p>
+            <div class="composer-actions-row">
+              <div class="composer-actions-center">
+              <div class="field field-voice-picker" id="voice-field" hidden>
+                <span class="field-label">Narration voice</span>
+                <div class="voice-picker" id="voice-picker">
+                  <button
+                    type="button"
+                    class="voice-picker-trigger select"
+                    id="voice-trigger"
+                    aria-haspopup="listbox"
+                    aria-expanded="false"
+                    aria-controls="voice-panel"
+                  >
+                    <span class="voice-picker-trigger-text" id="voice-trigger-label">Auto</span>
+                    <span class="voice-picker-chevron" aria-hidden="true"></span>
+                  </button>
+                  <div class="voice-picker-panel" id="voice-panel" role="listbox" hidden>
+                    <div
+                      class="voice-picker-row voice-picker-row-auto"
+                      role="option"
+                      tabindex="0"
+                      data-voice=""
+                      data-label="Auto"
+                    >
+                      <span class="voice-picker-row-main">
+                        <span class="voice-picker-play-placeholder" aria-hidden="true"></span>
+                        <span class="voice-picker-name">Auto (best match)</span>
+                      </span>
+                      <span class="voice-picker-gender muted">default</span>
+                    </div>
+                    <div class="voice-picker-list" id="voice-list"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="duration-enhance-row">
+                <label class="field field-duration-only">
+                  <span class="field-label">Duration</span>
+                  <select
+                    id="duration"
+                    name="target_duration_seconds"
+                    class="select select-duration"
+                    aria-describedby="duration-hint"
+                  >
+                    <option value="30">30 sec</option>
+                    <option value="59" selected>59 sec</option>
+                    <option value="90">1.5 min</option>
+                    <option value="120">2 min</option>
+                    <option value="180">3 min</option>
+                    <option value="240">4 min</option>
+                    <option value="300">5 min</option>
+                  </select>
+                  <span id="duration-hint" class="sr-only">Target length of the finished video</span>
+                </label>
+                <div class="field field-enhance" role="group" aria-labelledby="enhance-label">
+                  <span id="enhance-label" class="field-label field-label-enhance">Enhance</span>
+                  <label
+                    class="enhance-switch"
+                    title="Zoom motion on slides plus a two-voice dialogue"
+                  >
+                    <input
+                      type="checkbox"
+                      id="enhance-motion"
+                      class="enhance-switch-input"
+                      role="switch"
+                      aria-checked="false"
+                      aria-describedby="enhance-hint"
+                    />
+                    <span class="enhance-switch-track" aria-hidden="true"></span>
+                  </label>
+                  <span id="enhance-hint" class="sr-only"
+                    >When on: smooth zoom on each slide, and a two-voice dialogue (male and female
+                    alternating) to explain the topic. Does not change target
+                    video length.</span>
+                </div>
+              </div>
+              <div class="format-quality-row">
+                <label class="field field-format">
+                  <span class="field-label">Format</span>
+                  <select
+                    id="content-format"
+                    name="content_format"
+                    class="select select-format"
+                    aria-describedby="content-format-hint"
+                  >
+                    <option value="reels_shorts" selected>Reels / Shorts (9:16)</option>
+                    <option value="youtube_landscape">YouTube (16:9)</option>
+                    <option value="instagram_fb">Instagram / Facebook (1:1)</option>
+                  </select>
+                  <span id="content-format-hint" class="sr-only"
+                    >Aspect ratio for slides and final video frame</span>
+                </label>
+                <label class="field field-quality">
+                  <span class="field-label">Quality</span>
+                  <select
+                    id="output-quality"
+                    name="output_quality"
+                    class="select select-quality"
+                    aria-describedby="output-quality-hint"
+                  >
+                    <option value="720p">720p</option>
+                    <option value="1080p" selected>1080p</option>
+                    <option value="4k">4K</option>
+                    <option value="8k">8K</option>
+                  </select>
+                  <span id="output-quality-hint" class="sr-only"
+                    >Output resolution; image models use the closest supported tier</span>
+                </label>
+              </div>
+              <div class="composer-assets-stack">
+                <button
+                  type="button"
+                  class="btn-upload-logo"
+                  id="assets-trigger"
+                  aria-haspopup="dialog"
+                  aria-controls="assets-dialog"
+                  title="Optional logo, product photo, address, thumbnail, CTA art"
+                >
+                  Assets
+                </button>
+                <span class="assets-summary" id="assets-summary" aria-live="polite"></span>
+              </div>
+              </div>
+              <button type="submit" class="btn-primary btn-primary-composer" id="submit">
+                <span class="btn-text">Generate video</span>
+                <span class="btn-spinner" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div id="assets-modal" class="assets-modal" hidden aria-hidden="true">
+          <div class="assets-modal-backdrop" id="assets-backdrop" tabindex="-1"></div>
+          <div
+            class="assets-dialog"
+            id="assets-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="assets-title"
+          >
+            <div class="assets-dialog-head">
+              <h2 class="assets-title" id="assets-title">Video assets</h2>
+              <button type="button" class="assets-close" id="assets-close" aria-label="Close dialog">
+                <span class="assets-close-x" aria-hidden="true">×</span>
+                <span class="assets-close-text">Close</span>
+              </button>
+            </div>
+            <div class="assets-dialog-scroll">
+              <p class="assets-lead">
+                All optional. Images: PNG, JPEG, or WebP · max 2MB each. They are composited onto the final MP4
+                (logo top-left, product bottom-right, address and footer line; CTA is a separate full-screen
+                closing slide so it does not cover the product shot).
+                Thumbnail is embedded in the file when supported.
+              </p>
+              <div class="assets-rows">
+                <div class="assets-row">
+                  <div class="assets-row-label">
+                    <span class="assets-row-title">Logo</span>
+                    <span class="assets-row-hint">Top-left on every frame</span>
+                  </div>
+                  <div class="assets-row-actions">
+                    <input
+                      type="file"
+                      id="logo"
+                      form="form"
+                      name="logo"
+                      class="sr-only"
+                      tabindex="-1"
+                      accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                      aria-label="Logo image"
+                    />
+                    <button type="button" class="btn-asset-pick" data-pick="logo">Choose file</button>
+                    <button type="button" class="btn-asset-clear" data-clear="logo">Clear</button>
+                    <span class="assets-filename" id="logo-filename" aria-live="polite"></span>
+                  </div>
+                </div>
+                <div class="assets-row">
+                  <div class="assets-row-label">
+                    <span class="assets-row-title">Product</span>
+                    <span class="assets-row-hint"
+                      >Gemini slide APIs attach your photo so the product can appear in-hand; Imagen/Nano Banana use slide compositing instead</span>
+                  </div>
+                  <div class="assets-row-actions">
+                    <input
+                      type="file"
+                      id="asset-product"
+                      form="form"
+                      name="product_image"
+                      class="sr-only"
+                      tabindex="-1"
+                      accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                      aria-label="Product image"
+                    />
+                    <button type="button" class="btn-asset-pick" data-pick="asset-product">Choose file</button>
+                    <button type="button" class="btn-asset-clear" data-clear="asset-product">Clear</button>
+                    <span class="assets-filename" id="product-filename" aria-live="polite"></span>
+                  </div>
+                </div>
+                <div class="assets-row assets-row-text">
+                  <div class="assets-row-label">
+                    <span class="assets-row-title">Address</span>
+                    <span class="assets-row-hint">Shown above the footer on the video</span>
+                  </div>
+                  <textarea
+                    id="asset-address"
+                    form="form"
+                    name="address"
+                    class="textarea assets-address"
+                    rows="2"
+                    maxlength="400"
+                    placeholder="Shop or business address (optional)"
+                    aria-label="Address text for video"
+                  ></textarea>
+                </div>
+                <div class="assets-row">
+                  <div class="assets-row-label">
+                    <span class="assets-row-title">Thumbnail</span>
+                    <span class="assets-row-hint">Embedded poster for the MP4</span>
+                  </div>
+                  <div class="assets-row-actions">
+                    <input
+                      type="file"
+                      id="asset-thumbnail"
+                      form="form"
+                      name="thumbnail_image"
+                      class="sr-only"
+                      tabindex="-1"
+                      accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                      aria-label="Video thumbnail image"
+                    />
+                    <button type="button" class="btn-asset-pick" data-pick="asset-thumbnail">Choose file</button>
+                    <button type="button" class="btn-asset-clear" data-clear="asset-thumbnail">Clear</button>
+                    <span class="assets-filename" id="thumbnail-filename" aria-live="polite"></span>
+                  </div>
+                </div>
+                <div class="assets-row">
+                  <div class="assets-row-label">
+                    <span class="assets-row-title">CTA image</span>
+                    <span class="assets-row-hint">Own closing slide · full frame</span>
+                  </div>
+                  <div class="assets-row-actions">
+                    <input
+                      type="file"
+                      id="asset-cta"
+                      form="form"
+                      name="cta_image"
+                      class="sr-only"
+                      tabindex="-1"
+                      accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                      aria-label="CTA image"
+                    />
+                    <button type="button" class="btn-asset-pick" data-pick="asset-cta">Choose file</button>
+                    <button type="button" class="btn-asset-clear" data-clear="asset-cta">Clear</button>
+                    <span class="assets-filename" id="cta-filename" aria-live="polite"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="assets-dialog-foot">
+              <p class="assets-foot-hint">Your choices are kept until you tap Generate video.</p>
+              <div class="assets-foot-buttons">
+                <button type="button" class="btn-assets-cancel" id="assets-cancel">Cancel</button>
+                <button type="button" class="btn-primary" id="assets-done">Done</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
+    <script src="/static/app.js?v=22" defer></script>
+  </body>
+</html>
