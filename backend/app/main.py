@@ -1083,12 +1083,16 @@ async def api_generate_image(
     count: Annotated[int, Form()] = 1,
     image: UploadFile | None = File(None),
 ):
-    """Standalone image generation using 3-tier model failover.
+    """Standalone image generation with face-swap + multi-tier failover.
 
-    When an *image* file is uploaded the model receives it as a reference photo
-    for face-preserving portrait stylisation.
+    When an *image* file is uploaded AND a portrait template is selected,
+    the system first attempts a pixel-perfect face swap (InsightFace).
+    If face-swap fails (or no template), falls back to prompt-based AI
+    generation (OpenAI → Gemini → Vertex).
     """
     from app.services.standalone_image_gen import generate_standalone_image, ImageGenResult
+    from app.services.face_swap import swap_face, FaceSwapError, FACE_SWAP_TEMPLATES
+    from app.services.image_watermark import watermark_file
 
     settings = get_settings()
     prompt_clean = (prompt or "").strip()
@@ -1103,6 +1107,8 @@ async def api_generate_image(
         if len(reference_bytes) < 100:
             reference_bytes = None
 
+    use_face_swap = bool(reference_bytes and style in FACE_SWAP_TEMPLATES)
+
     if reference_bytes:
         portrait_prefix = _PORTRAIT_STYLE_PREFIX.get(style, "")
         if portrait_prefix:
@@ -1116,20 +1122,44 @@ async def api_generate_image(
     images = []
     errors = []
     for i in range(count):
-        try:
-            result = await generate_standalone_image(
-                settings, full_prompt, aspect_ratio=aspect_ratio,
-                reference_image=reference_bytes,
-            )
-            images.append({
-                "url": f"/media/img/{result.path.parent.name}/{result.path.name}",
-                "width": result.width,
-                "height": result.height,
-                "model": result.model,
-            })
-        except Exception as e:
-            logger.exception("generate-image failed (image %s): %s", i + 1, e)
-            errors.append(str(e))
+        job_id = uuid.uuid4().hex[:12]
+        out_dir = settings.artifact_root / f"img_{job_id}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"image_{job_id}.png"
+
+        generated = False
+
+        if use_face_swap:
+            try:
+                await swap_face(style, reference_bytes, out_path)
+                if out_path.is_file() and out_path.stat().st_size > 100:
+                    watermark_file(out_path)
+                    images.append({
+                        "url": f"/media/img/{out_path.parent.name}/{out_path.name}",
+                        "width": 0,
+                        "height": 0,
+                        "model": "face-swap",
+                    })
+                    generated = True
+                    logger.info("generate-image: face-swap OK (image %s)", i + 1)
+            except (FaceSwapError, Exception) as e:
+                logger.warning("generate-image: face-swap failed (image %s): %s — falling back to AI generation", i + 1, e)
+
+        if not generated:
+            try:
+                result = await generate_standalone_image(
+                    settings, full_prompt, aspect_ratio=aspect_ratio,
+                    reference_image=reference_bytes,
+                )
+                images.append({
+                    "url": f"/media/img/{result.path.parent.name}/{result.path.name}",
+                    "width": result.width,
+                    "height": result.height,
+                    "model": result.model,
+                })
+            except Exception as e:
+                logger.exception("generate-image failed (image %s): %s", i + 1, e)
+                errors.append(str(e))
 
     if not images:
         raise HTTPException(
@@ -1140,7 +1170,7 @@ async def api_generate_image(
     return {
         "job_id": uuid.uuid4().hex[:12],
         "images": images,
-        "prompt_used": full_prompt[:300],
+        "prompt_used": full_prompt[:300] if not use_face_swap else f"[face-swap: {style}]",
     }
 
 

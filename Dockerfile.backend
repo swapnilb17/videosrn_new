@@ -1,12 +1,25 @@
 FROM python:3.11-slim
 
-# System deps: ffmpeg for video mux, libpq-dev for psycopg2, fonts for Pillow text rendering
+# System deps: ffmpeg for video mux, libpq-dev for psycopg2, fonts for Pillow,
+# libglib2.0-0 for OpenCV headless, libgl1 just-in-case for cv2
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         libpq-dev \
         fonts-dejavu-core \
         postgresql-client \
+        libglib2.0-0 \
+        libgl1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Download InsightFace models (cached layer — won't re-download when code changes)
+RUN mkdir -p /opt/models/models && \
+    python -c "\
+import urllib.request, zipfile, pathlib;\
+urllib.request.urlretrieve('https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip', '/tmp/buffalo_l.zip');\
+zipfile.ZipFile('/tmp/buffalo_l.zip').extractall('/opt/models/models/');\
+pathlib.Path('/tmp/buffalo_l.zip').unlink();\
+urllib.request.urlretrieve('https://github.com/deepinsight/insightface/releases/download/v0.7/inswapper_128.onnx', '/opt/models/inswapper_128.onnx');\
+print('Face-swap models downloaded OK')"
 
 WORKDIR /opt/backend
 
@@ -17,6 +30,7 @@ RUN pip install --no-cache-dir -e .
 
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV PYTHONUNBUFFERED=1
+ENV FACE_SWAP_MODEL_DIR=/opt/models
 
 COPY scripts/docker-entrypoint-backend.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
