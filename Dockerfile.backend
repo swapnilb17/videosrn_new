@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # System deps: ffmpeg for video mux, libpq-dev for psycopg2, fonts for Pillow,
-# libglib2.0-0 for OpenCV headless, libgl1 just-in-case for cv2
+# libglib2.0-0 for OpenCV headless, g++ for building insightface Cython ext
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         libpq-dev \
@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         postgresql-client \
         libglib2.0-0 \
         libgl1 \
+        g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Download InsightFace models (cached layer — won't re-download when code changes)
