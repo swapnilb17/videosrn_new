@@ -504,29 +504,29 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
           </div>
 
           <FileUploadField
-            label="Branding Logo (PNG — watermarked on every frame)"
-            accept="image/png"
+            label="Branding Logo (watermarked on every frame)"
+            accept="image/png,image/jpeg,image/webp"
             file={logoFile}
             onFileChange={setLogoFile}
           />
 
           <FileUploadField
-            label="Product Image (PNG — composited on slides)"
-            accept="image/png"
+            label="Product Image (composited on slides)"
+            accept="image/png,image/jpeg,image/webp"
             file={productFile}
             onFileChange={setProductFile}
           />
 
           <FileUploadField
-            label="CTA Image (PNG — rendered as closing slide)"
-            accept="image/png"
+            label="CTA Image (rendered as closing slide)"
+            accept="image/png,image/jpeg,image/webp"
             file={ctaFile}
             onFileChange={setCtaFile}
           />
 
           <FileUploadField
-            label="Thumbnail (JPEG — attached as MP4 poster)"
-            accept="image/jpeg"
+            label="Thumbnail (attached as MP4 poster)"
+            accept="image/png,image/jpeg,image/webp"
             file={thumbFile}
             onFileChange={setThumbFile}
           />

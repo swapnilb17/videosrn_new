@@ -257,13 +257,13 @@ export function ImageToAdVideo() {
                 onClick={() => logoRef.current?.click()}
                 className="flex w-full items-center gap-2 rounded-xl border border-dashed border-white/15 bg-[#0d1020] p-2 text-xs text-slate-400 transition hover:border-pink-400/40"
               >
-                <Upload className="h-3.5 w-3.5" /> Upload logo (PNG)
+                <Upload className="h-3.5 w-3.5" /> Upload logo
               </button>
             )}
             <input
               ref={logoRef}
               type="file"
-              accept="image/png"
+              accept="image/png,image/jpeg,image/webp"
               className="hidden"
               onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)}
             />
