@@ -1,8 +1,13 @@
-"""Standalone image generation with 3-tier model failover.
+"""Standalone image generation with failover.
 
-Primary:   Gemini 3.1 Flash Preview (native generateContent)
-Secondary: Vertex Gemini 2.5 Flash (Vertex generateContent)
-Tertiary:  Vertex Imagen (:predict)
+Portrait mode (reference image provided):
+  Tier 0:  OpenAI gpt-image-1 (images.edit — best face preservation)
+  Tier 1+: Gemini / Vertex fallback
+
+Text-to-image mode (no reference image):
+  Tier 1:  Gemini 3.1 Flash Preview (native generateContent)
+  Tier 2:  Vertex Gemini 2.5 Flash (Vertex generateContent)
+  Tier 3:  Vertex Imagen (:predict)
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from app.services.vertex_imagen import (
     _credentials_path,
     _generate_one_with_region_failover as vertex_imagen_generate_one,
 )
+from app.services.openai_portrait import OpenAIPortraitError, generate_openai_portrait
 from app.services.image_watermark import watermark_file
 
 logger = logging.getLogger(__name__)
@@ -88,6 +94,22 @@ async def generate_standalone_image(
         w, h = 1024, 768
 
     timeout = max(30.0, settings.gemini_timeout)
+
+    # Tier 0: OpenAI gpt-image-1 (portrait mode only — best face preservation)
+    openai_key = (settings.openai_api_key or "").strip()
+    if reference_image and openai_key:
+        try:
+            await generate_openai_portrait(
+                openai_key, reference_image, prompt, out_path,
+                aspect_ratio=aspect_ratio,
+                timeout=max(60.0, settings.openai_timeout),
+            )
+            if out_path.is_file() and out_path.stat().st_size > 100:
+                watermark_file(out_path)
+                logger.info("Standalone image: OpenAI portrait OK")
+                return ImageGenResult(out_path, w, h, "gpt-image-1")
+        except (OpenAIPortraitError, Exception) as e:
+            logger.warning("Standalone image: OpenAI portrait failed: %s", e)
 
     # Tier 1: Gemini 3.1 Flash Preview (native)
     if patched.gemini_native_image_configured():
