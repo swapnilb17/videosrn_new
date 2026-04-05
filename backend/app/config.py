@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5", validation_alias="OPENAI_MODEL")
+    openai_image_model: str = Field(default="dall-e-2", validation_alias="OPENAI_IMAGE_MODEL")
     openai_timeout: float = Field(default=120.0, validation_alias="OPENAI_TIMEOUT")
 
     elevenlabs_api_key: str = Field(default="", validation_alias="ELEVENLABS_API_KEY")

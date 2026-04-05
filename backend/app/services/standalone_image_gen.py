@@ -1,7 +1,7 @@
 """Standalone image generation with failover.
 
 Portrait mode (reference image provided):
-  Tier 0:  OpenAI gpt-image-1 (images.edit — best face preservation)
+  Tier 0:  OpenAI images.edit (model from OPENAI_IMAGE_MODEL, default dall-e-2)
   Tier 1+: Gemini / Vertex fallback
 
 Text-to-image mode (no reference image):
@@ -95,19 +95,21 @@ async def generate_standalone_image(
 
     timeout = max(30.0, settings.gemini_timeout)
 
-    # Tier 0: OpenAI gpt-image-1 (portrait mode only — best face preservation)
+    # Tier 0: OpenAI portrait (portrait mode only — best face preservation)
     openai_key = (settings.openai_api_key or "").strip()
+    openai_img_model = (settings.openai_image_model or "dall-e-2").strip()
     if reference_image and openai_key:
         try:
             await generate_openai_portrait(
                 openai_key, reference_image, prompt, out_path,
+                model=openai_img_model,
                 aspect_ratio=aspect_ratio,
                 timeout=max(60.0, settings.openai_timeout),
             )
             if out_path.is_file() and out_path.stat().st_size > 100:
                 watermark_file(out_path)
-                logger.info("Standalone image: OpenAI portrait OK")
-                return ImageGenResult(out_path, w, h, "gpt-image-1")
+                logger.info("Standalone image: OpenAI portrait OK (model=%s)", openai_img_model)
+                return ImageGenResult(out_path, w, h, openai_img_model)
         except (OpenAIPortraitError, Exception) as e:
             logger.warning("Standalone image: OpenAI portrait failed: %s", e)
 
