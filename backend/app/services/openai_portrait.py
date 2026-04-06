@@ -1,9 +1,7 @@
-"""Portrait stylisation via OpenAI images.edit.
+"""Portrait stylisation via OpenAI gpt-image-1 (images.edit).
 
 Accepts a user photo + style prompt and returns the generated image bytes.
 Used as the highest-priority tier for face-preserving portrait generation.
-
-Set OPENAI_IMAGE_MODEL to control which model is used (default: dall-e-2).
 """
 
 from __future__ import annotations
@@ -22,25 +20,12 @@ class OpenAIPortraitError(Exception):
     pass
 
 
-ASPECT_TO_SIZE_GPT_IMAGE = {
+ASPECT_TO_SIZE = {
     "1:1": "1024x1024",
     "16:9": "1536x1024",
     "9:16": "1024x1536",
     "4:3": "1024x1024",
 }
-
-ASPECT_TO_SIZE_DALLE2 = {
-    "1:1": "1024x1024",
-    "16:9": "1024x1024",
-    "9:16": "1024x1024",
-    "4:3": "1024x1024",
-}
-
-
-def _size_for_model(model: str, aspect_ratio: str) -> str:
-    if model == "gpt-image-1":
-        return ASPECT_TO_SIZE_GPT_IMAGE.get(aspect_ratio, "1024x1024")
-    return ASPECT_TO_SIZE_DALLE2.get(aspect_ratio, "1024x1024")
 
 
 async def generate_openai_portrait(
@@ -49,7 +34,6 @@ async def generate_openai_portrait(
     prompt: str,
     out_path: Path,
     *,
-    model: str = "dall-e-2",
     aspect_ratio: str = "1:1",
     timeout: float = 120.0,
 ) -> None:
@@ -60,7 +44,7 @@ async def generate_openai_portrait(
     if not api_key:
         raise OpenAIPortraitError("OPENAI_API_KEY is not set")
 
-    size = _size_for_model(model, aspect_ratio)
+    size = ASPECT_TO_SIZE.get(aspect_ratio, "1024x1024")
 
     client = AsyncOpenAI(api_key=api_key, timeout=timeout)
 
@@ -69,7 +53,7 @@ async def generate_openai_portrait(
         image_file.name = "photo.png"
 
         response = await client.images.edit(
-            model=model,
+            model="gpt-image-1",
             image=image_file,
             prompt=prompt,
             size=size,

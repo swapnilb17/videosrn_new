@@ -23,7 +23,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   generateVideo,
-  pollJobStatus,
   fetchVoices,
   ttsPreviewUrl,
   mediaDownloadUrl,
@@ -141,7 +140,6 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateResponse | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // --- Preview audio ---
   const [previewAudioSrc, setPreviewAudioSrc] = useState<string | null>(null);
@@ -168,18 +166,8 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     setPreviewAudioSrc(ttsPreviewUrl(voiceName, language));
   }
 
-  function stopPolling() {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }
-
-  useEffect(() => stopPolling, []);
-
   async function handleGenerate() {
     if (!topic.trim()) return;
-    stopPolling();
     setGenerating(true);
     setError(null);
     setResult(null);
@@ -198,35 +186,15 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     if (thumbFile) fd.append("thumbnail_image", thumbFile);
     if (address.trim()) fd.append("address", address.trim());
 
-    let jobId: string;
     try {
-      const accepted = await generateVideo(fd);
-      jobId = accepted.job_id;
+      const res = await generateVideo(fd);
+      setResult(res);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Generation failed";
       setError(msg);
+    } finally {
       setGenerating(false);
-      return;
     }
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const status = await pollJobStatus(jobId);
-        if (status.status === "succeeded") {
-          stopPolling();
-          setResult(status.result);
-          setGenerating(false);
-        } else if (status.status === "failed") {
-          stopPolling();
-          setError(status.error);
-          setGenerating(false);
-        }
-      } catch {
-        stopPolling();
-        setError("Lost connection while generating. Check server logs.");
-        setGenerating(false);
-      }
-    }, 3000);
   }
 
   return (

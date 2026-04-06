@@ -74,32 +74,15 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export type GenerateAcceptedResponse = {
-  job_id: string;
-  status: "running";
-};
-
-export type JobStatusRunning = { status: "running" };
-export type JobStatusSucceeded = { status: "succeeded"; result: GenerateResponse };
-export type JobStatusFailed = { status: "failed"; error: string };
-export type JobStatusResponse = JobStatusRunning | JobStatusSucceeded | JobStatusFailed;
-
 export async function generateVideo(
   formData: FormData,
-): Promise<GenerateAcceptedResponse> {
+): Promise<GenerateResponse> {
   const res = await fetch("/generate", {
     method: "POST",
     body: formData,
     credentials: "include",
   });
-  return handleResponse<GenerateAcceptedResponse>(res);
-}
-
-export async function pollJobStatus(jobId: string): Promise<JobStatusResponse> {
-  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/status`, {
-    credentials: "include",
-  });
-  return handleResponse<JobStatusResponse>(res);
+  return handleResponse<GenerateResponse>(res);
 }
 
 export async function fetchVoices(

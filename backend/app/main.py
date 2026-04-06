@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -36,7 +36,7 @@ from app.job_store import (
     job_mark_succeeded,
     job_update_script,
 )
-from app.schemas import LanguageCode
+from app.schemas import GenerateResponse, LanguageCode
 from app.services.branding_logo import save_branding_logo_from_upload
 from app.services.user_assets import (
     normalize_address_form,
@@ -441,23 +441,11 @@ def _parse_enhance_motion_form(raw: str | None) -> bool:
     return s in ("1", "true", "yes", "on")
 
 
-# In-memory job results for async polling (cleared on server restart).
-_job_results: dict[str, dict] = {}
-
-
-@app.get("/api/jobs/{job_id}/status")
-async def job_status(job_id: str):
-    """Poll the status of an async /generate job."""
-    entry = _job_results.get(job_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail="Unknown job_id")
-    return entry
-
-
-@app.post("/generate", status_code=202)
+@app.post("/generate", response_model=GenerateResponse)
 @limiter.limit(_limiter_bootstrap.rate_limit_generate_effective())
 async def generate(
     request: Request,
+    background_tasks: BackgroundTasks,
     session: Annotated[AsyncSession | None, Depends(get_db_session)],
     _google_user: GoogleUserDep,
     topic: Annotated[str, Form(min_length=1, max_length=500)],
@@ -565,6 +553,13 @@ async def generate(
         applied_output_quality or "-",
     )
 
+    t_pipeline_start = time.perf_counter()
+    stage_times: dict[str, float] = {}
+
+    async def _fail(msg: str) -> None:
+        if persist and session is not None:
+            await job_mark_failed(session, job_uuid, msg)
+
     if persist:
         await job_insert_running(
             session,
@@ -575,79 +570,8 @@ async def generate(
             owner_sub=owner_sub,
         )
 
-    session_factory = getattr(request.app.state, "session_factory", None)
-    _job_results[job_id] = {"status": "running"}
-
-    asyncio.create_task(
-        _run_video_pipeline(
-            settings=settings,
-            job_id=job_id,
-            job_uuid=job_uuid,
-            job_dir=job_dir,
-            topic=topic,
-            lang=lang,
-            target_sec=target_sec,
-            enhance_kb=enhance_kb,
-            gcp_voice_choice=gcp_voice_choice,
-            visual_settings=visual_settings,
-            applied_content_format=applied_content_format,
-            applied_output_quality=applied_output_quality,
-            branding_applied=branding_applied,
-            product_applied=product_applied,
-            cta_applied=cta_applied,
-            thumbnail_applied=thumbnail_applied,
-            overlay_assets=overlay_assets,
-            product_file=product_file,
-            cta_file=cta_file,
-            thumb_file=thumb_file,
-            address_norm=address_norm,
-            persist=persist,
-            session_factory=session_factory,
-        )
-    )
-
-    return {"job_id": job_id, "status": "running"}
-
-
-# ---------------------------------------------------------------------------
-
-
-async def _run_video_pipeline(
-    *,
-    settings: Settings,
-    job_id: str,
-    job_uuid: "uuid.UUID",
-    job_dir: Path,
-    topic: str,
-    lang: str,
-    target_sec: int,
-    enhance_kb: bool,
-    gcp_voice_choice: str | None,
-    visual_settings,
-    applied_content_format: str | None,
-    applied_output_quality: str | None,
-    branding_applied: bool,
-    product_applied: bool,
-    cta_applied: bool,
-    thumbnail_applied: bool,
-    overlay_assets: FrameOverlayAssets,
-    product_file: Path,
-    cta_file: Path,
-    thumb_file: Path,
-    address_norm: str,
-    persist: bool,
-    session_factory=None,
-) -> None:
-    """Background pipeline: script generation, TTS, slide images, video mux, S3 upload."""
-    session: AsyncSession | None = None
+    t0 = time.perf_counter()
     try:
-        if persist and session_factory is not None:
-            session = session_factory()
-
-        t_pipeline_start = time.perf_counter()
-        stage_times: dict[str, float] = {}
-
-        t0 = time.perf_counter()
         script = await generate_script(
             settings,
             topic,
@@ -655,310 +579,333 @@ async def _run_video_pipeline(
             target_duration_seconds=target_sec,
             conversational=enhance_kb,
         )
-        stage_times["script_generation"] = time.perf_counter() - t0
-        logger.info("job=%s TIMING script_generation=%.1fs", job_id, stage_times["script_generation"])
+    except ValueError as e:
+        await _fail(str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except RuntimeError as e:
+        await _fail(str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    stage_times["script_generation"] = time.perf_counter() - t0
+    logger.info("job=%s TIMING script_generation=%.1fs", job_id, stage_times["script_generation"])
 
-        if persist and session is not None:
-            await job_update_script(session, job_uuid, script.model_dump())
+    if persist and session is not None:
+        await job_update_script(session, job_uuid, script.model_dump())
 
-        script_path = job_dir / "script.json"
-        script_path.write_text(script.model_dump_json(indent=2), encoding="utf-8")
+    script_path = job_dir / "script.json"
+    script_path.write_text(script.model_dump_json(indent=2), encoding="utf-8")
 
-        mp3_path = job_dir / "voiceover.mp3"
-        tts_provider: Literal["google", "elevenlabs", "coqui"] = "coqui"
-        t0 = time.perf_counter()
+    mp3_path = job_dir / "voiceover.mp3"
+    tts_provider: Literal["google", "elevenlabs", "coqui"] = "coqui"
+    t0 = time.perf_counter()
 
-        async def _tts_coqui_fallback(
-            primary_err: Exception,
-            primary_label: str,
-            fix_hint: str,
-        ) -> None:
-            nonlocal tts_provider
-            try:
-                await asyncio.to_thread(
-                    synthesize_coqui_sync,
-                    settings,
-                    script.full_script_plain,
-                    lang,
-                    mp3_path,
-                )
-                tts_provider = "coqui"
-            except Exception as ce:
-                logger.exception(
-                    "job=%s Coqui fallback failed %s=%s Coqui=%s",
-                    job_id, primary_label, primary_err, ce,
-                )
-                hint = str(ce).strip()
-                if len(hint) > 600:
-                    hint = hint[:597] + "..."
-                raise RuntimeError(
-                    hint or "Voice generation failed. Check server logs."
-                ) from ce
-
-        if settings.google_tts_is_configured():
-            try:
-                if enhance_kb and script.conversational_turns:
-                    await asyncio.to_thread(
-                        synthesize_google_tts_conversational_sync,
-                        settings,
-                        script.conversational_turns,
-                        lang,
-                        mp3_path,
-                        user_voice=gcp_voice_choice,
-                    )
-                else:
-                    await asyncio.to_thread(
-                        synthesize_google_tts_sync,
-                        settings,
-                        script.full_script_plain,
-                        lang,
-                        mp3_path,
-                        voice_name=gcp_voice_choice,
-                    )
-                tts_provider = "google"
-            except GoogleTtsError as e:
-                logger.warning("job=%s Google Cloud TTS failed, trying Coqui: %s", job_id, e)
-                await _tts_coqui_fallback(
-                    e,
-                    "Primary voice service",
-                    "Fix: check server voice configuration and logs. "
-                    "Or install local TTS: pip install -e '.[coqui]'",
-                )
-        elif settings.elevenlabs_is_configured():
-            try:
-                await synthesize_elevenlabs(
-                    settings,
-                    script.full_script_plain,
-                    lang,
-                    mp3_path,
-                )
-                tts_provider = "elevenlabs"
-            except ElevenLabsError as e:
-                logger.warning("job=%s ElevenLabs failed, trying Coqui: %s", job_id, e)
-                await _tts_coqui_fallback(
-                    e,
-                    "ElevenLabs",
-                    "Fix: set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env (see .env.example), "
-                    "restart the server, or install local TTS with: pip install -e '.[coqui]'",
-                )
-        else:
-            try:
-                await asyncio.to_thread(
-                    synthesize_coqui_sync,
-                    settings,
-                    script.full_script_plain,
-                    lang,
-                    mp3_path,
-                )
-                tts_provider = "coqui"
-            except Exception as ce:
-                logger.exception("job=%s Coqui TTS failed: %s", job_id, ce)
-                hint = str(ce).strip()
-                if len(hint) > 600:
-                    hint = hint[:597] + "..."
-                raise RuntimeError(
-                    hint or "Voice generation failed. Check server logs."
-                ) from ce
-
-        stage_times["tts"] = time.perf_counter() - t0
-        logger.info("job=%s TIMING tts=%.1fs provider=%s", job_id, stage_times["tts"], tts_provider)
-
-        t0 = time.perf_counter()
-        mp3_path = await asyncio.to_thread(
-            trim_mp3_to_max_duration,
-            mp3_path,
-            float(target_sec),
-            ffmpeg_explicit=settings.ffmpeg_path,
-        )
-        stage_times["audio_trim"] = time.perf_counter() - t0
-
-        mp4_path = job_dir / "output.mp4"
-        visual_mode: Literal[
-            "gemini_native_image_slideshow",
-            "vertex_gemini_image_slideshow",
-            "google_imagen_slideshow",
-            "nano_banana_slideshow",
-            "title_card",
-        ] = "title_card"
-        visual_detail: str | None = None
-
-        if not settings.slide_visuals_configured():
-            visual_detail = (
-                "No slide API configured. Add GEMINI_API_KEY for Nano Banana 2 (native) and/or Imagen, "
-                "enable Vertex Imagen (IMAGEN_USE_VERTEX), or set NANO_BANANA_API_KEY for the alternate provider."
+    async def _tts_coqui_fallback(
+        primary_err: Exception,
+        primary_label: str,
+        fix_hint: str,
+    ) -> None:
+        nonlocal tts_provider
+        try:
+            await asyncio.to_thread(
+                synthesize_coqui_sync,
+                settings,
+                script.full_script_plain,
+                lang,
+                mp3_path,
             )
+            tts_provider = "coqui"
+        except Exception as ce:
+            logger.exception(
+                "job=%s Coqui fallback failed %s=%s Coqui=%s",
+                job_id,
+                primary_label,
+                primary_err,
+                ce,
+            )
+            detail = (
+                f"Voice generation failed. {primary_label}: {primary_err}. "
+                f"Fallback (Coqui): {ce}. {fix_hint}"
+            )
+            await _fail(detail)
+            hint = str(ce).strip()
+            if len(hint) > 600:
+                hint = hint[:597] + "..."
+            raise HTTPException(
+                status_code=503,
+                detail=hint or "Voice generation failed. Check server logs.",
+            ) from ce
 
-        t0 = time.perf_counter()
-        image_paths: list[Path] | None = None
-        slides_dir = job_dir / "slides"
-        product_ref_path = product_file if product_applied and product_file.is_file() else None
-        used_multimodal_product_ref = False
-
-        if settings.gemini_native_image_configured():
-            try:
-                image_paths = await generate_gemini_native_slide_images(
-                    visual_settings,
-                    topic,
-                    script,
+    if settings.google_tts_is_configured():
+        try:
+            if enhance_kb and script.conversational_turns:
+                await asyncio.to_thread(
+                    synthesize_google_tts_conversational_sync,
+                    settings,
+                    script.conversational_turns,
                     lang,
-                    slides_dir,
-                    reserve_product_hero_zone=product_applied and product_ref_path is None,
-                    product_reference_path=product_ref_path,
+                    mp3_path,
+                    user_voice=gcp_voice_choice,
                 )
-                visual_mode = "gemini_native_image_slideshow"
-            except (GeminiNativeImageError, RuntimeError, ValueError) as e:
-                logger.warning("job=%s Gemini native image (Nano Banana 2) slides failed: %s", job_id, e)
-                visual_detail = f"Gemini native image: {e}"[:600]
             else:
-                used_multimodal_product_ref = bool(product_ref_path)
-
-        if image_paths is None and settings.vertex_gemini_image_configured():
-            try:
-                image_paths = await generate_vertex_gemini_slide_images(
-                    visual_settings,
-                    topic,
-                    script,
+                await asyncio.to_thread(
+                    synthesize_google_tts_sync,
+                    settings,
+                    script.full_script_plain,
                     lang,
-                    slides_dir,
-                    reserve_product_hero_zone=product_applied and product_ref_path is None,
-                    product_reference_path=product_ref_path,
+                    mp3_path,
+                    voice_name=gcp_voice_choice,
                 )
-                visual_mode = "vertex_gemini_image_slideshow"
-            except (VertexGeminiImageError, RuntimeError, ValueError) as e:
-                logger.warning("job=%s Vertex Gemini image slides failed: %s", job_id, e)
-                extra = f"Vertex Gemini image: {e}"[:600]
-                visual_detail = f"{visual_detail} \u00b7 {extra}" if visual_detail else extra
-            else:
-                used_multimodal_product_ref = bool(product_ref_path)
+            tts_provider = "google"
+        except GoogleTtsError as e:
+            logger.warning("job=%s Google Cloud TTS failed, trying Coqui: %s", job_id, e)
+            await _tts_coqui_fallback(
+                e,
+                "Primary voice service",
+                "Fix: check server voice configuration and logs. "
+                "Or install local TTS: pip install -e '.[coqui]'",
+            )
+    elif settings.elevenlabs_is_configured():
+        try:
+            await synthesize_elevenlabs(
+                settings,
+                script.full_script_plain,
+                lang,
+                mp3_path,
+            )
+            tts_provider = "elevenlabs"
+        except ElevenLabsError as e:
+            logger.warning("job=%s ElevenLabs failed, trying Coqui: %s", job_id, e)
+            await _tts_coqui_fallback(
+                e,
+                "ElevenLabs",
+                "Fix: set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env (see .env.example), "
+                "restart the server, or install local TTS with: pip install -e '.[coqui]'",
+            )
+    else:
+        try:
+            await asyncio.to_thread(
+                synthesize_coqui_sync,
+                settings,
+                script.full_script_plain,
+                lang,
+                mp3_path,
+            )
+            tts_provider = "coqui"
+        except Exception as ce:
+            logger.exception("job=%s Coqui TTS failed: %s", job_id, ce)
+            detail = (
+                f"Voice generation failed (Coqui): {ce}. "
+                "Configure cloud voice, ElevenLabs, or install local TTS with: pip install -e '.[coqui]'"
+            )
+            await _fail(detail)
+            hint = str(ce).strip()
+            if len(hint) > 600:
+                hint = hint[:597] + "..."
+            raise HTTPException(
+                status_code=503,
+                detail=hint or "Voice generation failed. Check server logs.",
+            ) from ce
 
-        if image_paths is None and settings.gemini_imagen_configured():
-            try:
-                image_paths = await generate_imagen_slide_images(
-                    visual_settings,
-                    topic,
-                    script,
-                    lang,
-                    slides_dir,
-                    reserve_product_hero_zone=product_applied,
-                )
-                visual_mode = "google_imagen_slideshow"
-            except (GoogleImagenError, RuntimeError, ValueError) as e:
-                logger.warning("job=%s Google Imagen slides failed: %s", job_id, e)
-                extra = f"Imagen: {e}"[:600]
-                visual_detail = f"{visual_detail} \u00b7 {extra}" if visual_detail else extra
-            else:
-                used_multimodal_product_ref = False
+    stage_times["tts"] = time.perf_counter() - t0
+    logger.info("job=%s TIMING tts=%.1fs provider=%s", job_id, stage_times["tts"], tts_provider)
 
-        if image_paths is None and settings.nano_banana_configured():
-            try:
-                image_paths = await generate_slide_images(
-                    visual_settings,
-                    topic,
-                    script,
-                    lang,
-                    slides_dir,
-                    reserve_product_hero_zone=product_applied,
-                )
-                visual_mode = "nano_banana_slideshow"
-            except (NanoBananaError, RuntimeError, ValueError) as e:
-                logger.warning("job=%s Nano Banana slides failed: %s", job_id, e)
-                extra = f"Nano Banana: {e}"[:600]
-                visual_detail = f"{visual_detail} \u00b7 {extra}" if visual_detail else extra
-            else:
-                used_multimodal_product_ref = False
+    t0 = time.perf_counter()
+    mp3_path = await asyncio.to_thread(
+        trim_mp3_to_max_duration,
+        mp3_path,
+        float(target_sec),
+        ffmpeg_explicit=settings.ffmpeg_path,
+    )
+    stage_times["audio_trim"] = time.perf_counter() - t0
 
-        stage_times["slide_image_gen"] = time.perf_counter() - t0
-        logger.info(
-            "job=%s TIMING slide_image_gen=%.1fs slides=%s mode=%s",
-            job_id, stage_times["slide_image_gen"],
-            len(image_paths) if image_paths else 0, visual_mode,
+    mp4_path = job_dir / "output.mp4"
+    visual_mode: Literal[
+        "gemini_native_image_slideshow",
+        "vertex_gemini_image_slideshow",
+        "google_imagen_slideshow",
+        "nano_banana_slideshow",
+        "title_card",
+    ] = "title_card"
+    visual_detail: str | None = None
+
+    if not settings.slide_visuals_configured():
+        visual_detail = (
+            "No slide API configured. Add GEMINI_API_KEY for Nano Banana 2 (native) and/or Imagen, "
+            "enable Vertex Imagen (IMAGEN_USE_VERTEX), or set NANO_BANANA_API_KEY for the alternate provider."
         )
 
-        if image_paths is not None:
-            slideshow_overlay = overlay_assets
-            if product_applied and product_file.is_file():
-                if not used_multimodal_product_ref:
-                    t0 = time.perf_counter()
-                    stem_vis = visibility_by_slide_stem(
-                        topic,
-                        script_visual_segments(script),
-                        script.visual_segments_en,
+    t0 = time.perf_counter()
+    image_paths: list[Path] | None = None
+    slides_dir = job_dir / "slides"
+    product_ref_path = product_file if product_applied and product_file.is_file() else None
+    used_multimodal_product_ref = False
+
+    if settings.gemini_native_image_configured():
+        try:
+            image_paths = await generate_gemini_native_slide_images(
+                visual_settings,
+                topic,
+                script,
+                lang,
+                slides_dir,
+                reserve_product_hero_zone=product_applied and product_ref_path is None,
+                product_reference_path=product_ref_path,
+            )
+            visual_mode = "gemini_native_image_slideshow"
+        except (GeminiNativeImageError, RuntimeError, ValueError) as e:
+            logger.warning("job=%s Gemini native image (Nano Banana 2) slides failed: %s", job_id, e)
+            visual_detail = f"Gemini native image: {e}"[:600]
+        else:
+            used_multimodal_product_ref = bool(product_ref_path)
+
+    if image_paths is None and settings.vertex_gemini_image_configured():
+        try:
+            image_paths = await generate_vertex_gemini_slide_images(
+                visual_settings,
+                topic,
+                script,
+                lang,
+                slides_dir,
+                reserve_product_hero_zone=product_applied and product_ref_path is None,
+                product_reference_path=product_ref_path,
+            )
+            visual_mode = "vertex_gemini_image_slideshow"
+        except (VertexGeminiImageError, RuntimeError, ValueError) as e:
+            logger.warning("job=%s Vertex Gemini image slides failed: %s", job_id, e)
+            extra = f"Vertex Gemini image: {e}"[:600]
+            visual_detail = f"{visual_detail} · {extra}" if visual_detail else extra
+        else:
+            used_multimodal_product_ref = bool(product_ref_path)
+
+    if image_paths is None and settings.gemini_imagen_configured():
+        try:
+            image_paths = await generate_imagen_slide_images(
+                visual_settings,
+                topic,
+                script,
+                lang,
+                slides_dir,
+                reserve_product_hero_zone=product_applied,
+            )
+            visual_mode = "google_imagen_slideshow"
+        except (GoogleImagenError, RuntimeError, ValueError) as e:
+            logger.warning("job=%s Google Imagen slides failed: %s", job_id, e)
+            extra = f"Imagen: {e}"[:600]
+            visual_detail = f"{visual_detail} · {extra}" if visual_detail else extra
+        else:
+            used_multimodal_product_ref = False
+
+    if image_paths is None and settings.nano_banana_configured():
+        try:
+            image_paths = await generate_slide_images(
+                visual_settings,
+                topic,
+                script,
+                lang,
+                slides_dir,
+                reserve_product_hero_zone=product_applied,
+            )
+            visual_mode = "nano_banana_slideshow"
+        except (NanoBananaError, RuntimeError, ValueError) as e:
+            logger.warning("job=%s Nano Banana slides failed: %s", job_id, e)
+            extra = f"Nano Banana: {e}"[:600]
+            visual_detail = f"{visual_detail} · {extra}" if visual_detail else extra
+        else:
+            used_multimodal_product_ref = False
+
+    stage_times["slide_image_gen"] = time.perf_counter() - t0
+    logger.info(
+        "job=%s TIMING slide_image_gen=%.1fs slides=%s mode=%s",
+        job_id, stage_times["slide_image_gen"],
+        len(image_paths) if image_paths else 0, visual_mode,
+    )
+
+    if image_paths is not None:
+        slideshow_overlay = overlay_assets
+        if product_applied and product_file.is_file():
+            if not used_multimodal_product_ref:
+                t0 = time.perf_counter()
+                stem_vis = visibility_by_slide_stem(
+                    topic,
+                    script_visual_segments(script),
+                    script.visual_segments_en,
+                )
+                composite_tasks = [
+                    asyncio.to_thread(composite_user_product_onto_slide, sp, product_file)
+                    for sp in image_paths
+                    if stem_vis.get(sp.stem, False)
+                ]
+                if composite_tasks:
+                    await asyncio.gather(*composite_tasks)
+                stage_times["product_composite"] = time.perf_counter() - t0
+                logger.info(
+                    "job=%s TIMING product_composite=%.1fs composites=%d",
+                    job_id, stage_times["product_composite"], len(composite_tasks),
+                )
+            slideshow_overlay = replace(overlay_assets, product_image_path=None)
+        try:
+            ffprobe = resolve_ffprobe(settings.ffmpeg_path)
+            if not ffprobe:
+                raise RuntimeError(
+                    "ffprobe not found (usually installed with ffmpeg). "
+                    "Install ffmpeg fully or fix FFMPEG_PATH."
+                )
+            total_audio = audio_duration_seconds(ffprobe, mp3_path)
+            segment_texts = [t for _, t in script_visual_segments(script)]
+            paths_mux = list(image_paths)
+            dedicated_cta = False
+            if cta_applied and cta_file.is_file():
+                durs_script, cta_dur = slideshow_durations_with_cta_coda(
+                    segment_texts, total_audio
+                )
+                if cta_dur >= 0.5:
+                    cta_slide_path = job_dir / "slide_cta_dedicated.png"
+                    await asyncio.to_thread(
+                        render_dedicated_cta_slide_png,
+                        cta_slide_path,
+                        visual_settings.video_width,
+                        visual_settings.video_height,
+                        cta_file,
                     )
-                    composite_tasks = [
-                        asyncio.to_thread(composite_user_product_onto_slide, sp, product_file)
-                        for sp in image_paths
-                        if stem_vis.get(sp.stem, False)
-                    ]
-                    if composite_tasks:
-                        await asyncio.gather(*composite_tasks)
-                    stage_times["product_composite"] = time.perf_counter() - t0
-                    logger.info(
-                        "job=%s TIMING product_composite=%.1fs composites=%d",
-                        job_id, stage_times["product_composite"], len(composite_tasks),
-                    )
-                slideshow_overlay = replace(overlay_assets, product_image_path=None)
-            try:
-                ffprobe = resolve_ffprobe(settings.ffmpeg_path)
-                if not ffprobe:
-                    raise RuntimeError(
-                        "ffprobe not found (usually installed with ffmpeg). "
-                        "Install ffmpeg fully or fix FFMPEG_PATH."
-                    )
-                total_audio = audio_duration_seconds(ffprobe, mp3_path)
-                segment_texts = [t for _, t in script_visual_segments(script)]
-                paths_mux = list(image_paths)
-                dedicated_cta = False
-                if cta_applied and cta_file.is_file():
-                    durs_script, cta_dur = slideshow_durations_with_cta_coda(
-                        segment_texts, total_audio
-                    )
-                    if cta_dur >= 0.5:
-                        cta_slide_path = job_dir / "slide_cta_dedicated.png"
-                        await asyncio.to_thread(
-                            render_dedicated_cta_slide_png,
-                            cta_slide_path,
-                            visual_settings.video_width,
-                            visual_settings.video_height,
-                            cta_file,
-                        )
-                        paths_mux.append(cta_slide_path)
-                        durs = [*durs_script, cta_dur]
-                        dedicated_cta = True
-                        slideshow_overlay = replace(slideshow_overlay, cta_image_path=None)
-                    else:
-                        durs = word_weighted_durations(segment_texts, total_audio)
+                    paths_mux.append(cta_slide_path)
+                    durs = [*durs_script, cta_dur]
+                    dedicated_cta = True
+                    slideshow_overlay = replace(slideshow_overlay, cta_image_path=None)
                 else:
                     durs = word_weighted_durations(segment_texts, total_audio)
-                t0 = time.perf_counter()
-                mux_slideshow_with_audio(
-                    paths_mux,
-                    durs,
-                    mp3_path,
-                    mp4_path,
-                    visual_settings.video_width,
-                    visual_settings.video_height,
-                    ffmpeg_explicit=settings.ffmpeg_path,
-                    overlay_assets=slideshow_overlay,
-                    ken_burns=enhance_kb,
-                    final_slide_is_dedicated_cta=dedicated_cta,
-                )
-                stage_times["slideshow_mux"] = time.perf_counter() - t0
-                logger.info(
-                    "job=%s TIMING slideshow_mux=%.1fs slides=%d",
-                    job_id, stage_times["slideshow_mux"], len(paths_mux),
-                )
-            except (RuntimeError, ValueError) as e:
-                logger.warning(
-                    "job=%s slideshow mux failed, using title card: %s",
-                    job_id, e,
-                )
-                image_paths = None
-                visual_mode = "title_card"
-                visual_detail = f"Slide video assembly: {e}"[:600]
+            else:
+                durs = word_weighted_durations(segment_texts, total_audio)
+            t0 = time.perf_counter()
+            mux_slideshow_with_audio(
+                paths_mux,
+                durs,
+                mp3_path,
+                mp4_path,
+                visual_settings.video_width,
+                visual_settings.video_height,
+                ffmpeg_explicit=settings.ffmpeg_path,
+                overlay_assets=slideshow_overlay,
+                ken_burns=enhance_kb,
+                final_slide_is_dedicated_cta=dedicated_cta,
+            )
+            stage_times["slideshow_mux"] = time.perf_counter() - t0
+            logger.info(
+                "job=%s TIMING slideshow_mux=%.1fs slides=%d",
+                job_id, stage_times["slideshow_mux"], len(paths_mux),
+            )
+        except (RuntimeError, ValueError) as e:
+            logger.warning(
+                "job=%s slideshow mux failed, using title card: %s",
+                job_id,
+                e,
+            )
+            image_paths = None
+            visual_mode = "title_card"
+            visual_detail = f"Slide video assembly: {e}"[:600]
 
-        if image_paths is None:
-            png_path = job_dir / "title.png"
-            render_title_card(visual_settings, topic, lang, png_path)
+    if image_paths is None:
+        png_path = job_dir / "title.png"
+        render_title_card(visual_settings, topic, lang, png_path)
+        try:
             mux_still_image_and_audio(
                 png_path,
                 mp3_path,
@@ -968,25 +915,29 @@ async def _run_video_pipeline(
                 video_height=visual_settings.video_height,
                 overlay_assets=overlay_assets,
             )
+        except RuntimeError as e:
+            await _fail(str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
-        thumbnail_attached = False
-        if thumbnail_applied and thumb_file.is_file():
-            try:
-                await asyncio.to_thread(
-                    attach_thumbnail_to_mp4,
-                    mp4_path,
-                    thumb_file,
-                    ffmpeg_explicit=settings.ffmpeg_path,
-                )
-                thumbnail_attached = True
-            except Exception as e:
-                logger.warning("job=%s embed thumbnail failed: %s", job_id, e)
+    thumbnail_attached = False
+    if thumbnail_applied and thumb_file.is_file():
+        try:
+            await asyncio.to_thread(
+                attach_thumbnail_to_mp4,
+                mp4_path,
+                thumb_file,
+                ffmpeg_explicit=settings.ffmpeg_path,
+            )
+            thumbnail_attached = True
+        except Exception as e:
+            logger.warning("job=%s embed thumbnail failed: %s", job_id, e)
 
-        if visual_mode != "title_card":
-            visual_detail = None
+    if visual_mode != "title_card":
+        visual_detail = None
 
-        if persist and session is not None:
-            t0 = time.perf_counter()
+    if persist and session is not None:
+        t0 = time.perf_counter()
+        try:
             s3_keys = await asyncio.to_thread(upload_job_directory, settings, job_dir, job_id)
             await job_mark_succeeded(
                 session,
@@ -997,56 +948,49 @@ async def _run_video_pipeline(
                 branding_logo_applied=branding_applied,
                 s3_keys=s3_keys,
             )
-            stage_times["s3_upload"] = time.perf_counter() - t0
-            logger.info("job=%s TIMING s3_upload=%.1fs", job_id, stage_times["s3_upload"])
-            if settings.artifact_cleanup_after_s3:
-                _cleanup_job_dir(str(job_dir.resolve()))
+        except S3UploadError as e:
+            logger.exception("job=%s S3 upload failed: %s", job_id, e)
+            await _fail(str(e))
+            raise HTTPException(
+                status_code=503,
+                detail="Video storage failed. Try again later.",
+            ) from e
+        stage_times["s3_upload"] = time.perf_counter() - t0
+        logger.info("job=%s TIMING s3_upload=%.1fs", job_id, stage_times["s3_upload"])
+        if settings.artifact_cleanup_after_s3:
+            background_tasks.add_task(_cleanup_job_dir, str(job_dir.resolve()))
 
-        total_elapsed = time.perf_counter() - t_pipeline_start
-        stage_summary = " ".join(f"{k}={v:.1f}s" for k, v in stage_times.items())
-        logger.info(
-            "job=%s TIMING TOTAL=%.1fs visual_mode=%s tts=%s slides=%d | %s",
-            job_id, total_elapsed, visual_mode, tts_provider,
-            len(image_paths) if image_paths is not None else 0,
-            stage_summary,
-        )
+    total_elapsed = time.perf_counter() - t_pipeline_start
+    stage_summary = " ".join(f"{k}={v:.1f}s" for k, v in stage_times.items())
+    logger.info(
+        "job=%s TIMING TOTAL=%.1fs visual_mode=%s tts=%s slides=%d | %s",
+        job_id, total_elapsed, visual_mode, tts_provider,
+        len(image_paths) if image_paths is not None else 0,
+        stage_summary,
+    )
 
-        result_data = {
-            "job_id": job_id,
-            "target_duration_seconds": target_sec,
-            "script": script.model_dump(),
-            "mp3_url": f"/media/{job_id}/voiceover.mp3",
-            "mp4_url": f"/media/{job_id}/output.mp4",
-            "video_width": visual_settings.video_width,
-            "video_height": visual_settings.video_height,
-            "content_format_applied": applied_content_format,
-            "output_quality_applied": applied_output_quality,
-            "tts_provider": tts_provider,
-            "visual_mode": visual_mode,
-            "visual_detail": visual_detail,
-            "branding_logo_applied": branding_applied,
-            "product_image_applied": product_applied,
-            "cta_image_applied": cta_applied,
-            "address_applied": bool(address_norm),
-            "thumbnail_attached": thumbnail_attached,
-        }
-        _job_results[job_id] = {"status": "succeeded", "result": result_data}
+    return GenerateResponse(
+        job_id=job_id,
+        target_duration_seconds=target_sec,
+        script=script,
+        mp3_url=f"/media/{job_id}/voiceover.mp3",
+        mp4_url=f"/media/{job_id}/output.mp4",
+        video_width=visual_settings.video_width,
+        video_height=visual_settings.video_height,
+        content_format_applied=applied_content_format,
+        output_quality_applied=applied_output_quality,
+        tts_provider=tts_provider,
+        visual_mode=visual_mode,
+        visual_detail=visual_detail,
+        branding_logo_applied=branding_applied,
+        product_image_applied=product_applied,
+        cta_image_applied=cta_applied,
+        address_applied=bool(address_norm),
+        thumbnail_attached=thumbnail_attached,
+    )
 
-    except Exception as exc:
-        logger.exception("job=%s pipeline failed: %s", job_id, exc)
-        error_msg = str(exc).strip() or "Video generation failed"
-        if len(error_msg) > 600:
-            error_msg = error_msg[:597] + "..."
-        _job_results[job_id] = {"status": "failed", "error": error_msg}
-        if session is not None:
-            try:
-                await job_mark_failed(session, job_uuid, error_msg)
-            except Exception:
-                logger.exception("job=%s failed to mark job as failed in DB", job_id)
-    finally:
-        if session is not None:
-            await session.close()
 
+# ---------------------------------------------------------------------------
 # Media routes for standalone image / Veo3 video / voice generation
 # ---------------------------------------------------------------------------
 
