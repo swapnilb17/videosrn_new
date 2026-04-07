@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Languages,
@@ -15,6 +16,7 @@ import {
   Loader2,
   Volume2,
   Film,
+  GalleryHorizontalEnd,
   Upload,
   X,
 } from "lucide-react";
@@ -67,6 +69,9 @@ const QUALITIES = [
 
 const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
+
+/** After this many ms still generating, show Media Library hint (aligns with ~Cloudflare-scale waits). */
+const LONG_WAIT_HINT_AFTER_MS = 90_000;
 
 function FileUploadField({
   label,
@@ -144,6 +149,8 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<JobStatusResponse | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const longWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [longWaitHint, setLongWaitHint] = useState(false);
 
   // --- Preview audio ---
   const [previewAudioSrc, setPreviewAudioSrc] = useState<string | null>(null);
@@ -173,6 +180,7 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
   useEffect(() => {
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
+      if (longWaitTimerRef.current) clearTimeout(longWaitTimerRef.current);
     };
   }, []);
 
@@ -181,9 +189,14 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     setGenerating(true);
     setError(null);
     setResult(null);
+    setLongWaitHint(false);
     if (pollingRef.current) {
       clearInterval(pollingRef.current);
       pollingRef.current = null;
+    }
+    if (longWaitTimerRef.current) {
+      clearTimeout(longWaitTimerRef.current);
+      longWaitTimerRef.current = null;
     }
 
     const fd = new FormData();
@@ -204,17 +217,32 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     try {
       const { job_id } = await submitVideoJob(fd);
 
+      longWaitTimerRef.current = setTimeout(() => {
+        longWaitTimerRef.current = null;
+        setLongWaitHint(true);
+      }, LONG_WAIT_HINT_AFTER_MS);
+
       pollingRef.current = setInterval(async () => {
         try {
           const status = await pollJobStatus(job_id);
           if (status.status === "done") {
             if (pollingRef.current) clearInterval(pollingRef.current);
             pollingRef.current = null;
+            if (longWaitTimerRef.current) {
+              clearTimeout(longWaitTimerRef.current);
+              longWaitTimerRef.current = null;
+            }
+            setLongWaitHint(false);
             setResult(status);
             setGenerating(false);
           } else if (status.status === "failed") {
             if (pollingRef.current) clearInterval(pollingRef.current);
             pollingRef.current = null;
+            if (longWaitTimerRef.current) {
+              clearTimeout(longWaitTimerRef.current);
+              longWaitTimerRef.current = null;
+            }
+            setLongWaitHint(false);
             setError(status.error || "Generation failed");
             setGenerating(false);
           }
@@ -223,6 +251,11 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
         }
       }, 4000);
     } catch (e: unknown) {
+      if (longWaitTimerRef.current) {
+        clearTimeout(longWaitTimerRef.current);
+        longWaitTimerRef.current = null;
+      }
+      setLongWaitHint(false);
       const msg = e instanceof Error ? e.message : "Generation failed";
       setError(msg);
       setGenerating(false);
@@ -396,6 +429,28 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
               <p className="text-slate-500 text-xs mt-1">
                 This may take 2-5 minutes depending on duration and quality.
               </p>
+              {longWaitHint && (
+                <div className="mt-6 max-w-sm rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-left">
+                  <p className="text-sm text-amber-100/90">
+                    Video generation is taking longer than usual. You can keep this page open, or
+                    check your{" "}
+                    <Link
+                      href="/dashboard/media"
+                      className="font-medium text-amber-200 underline underline-offset-2 hover:text-white"
+                    >
+                      Media Library
+                    </Link>{" "}
+                    in the next few minutes — your video will appear there when it is ready.
+                  </p>
+                  <Link
+                    href="/dashboard/media"
+                    className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-amber-200/90 hover:text-white"
+                  >
+                    <GalleryHorizontalEnd className="h-3.5 w-3.5" />
+                    Open Media Library
+                  </Link>
+                </div>
+              )}
             </div>
           )}
 
