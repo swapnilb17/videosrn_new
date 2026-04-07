@@ -36,6 +36,7 @@ from app.job_store import (
     job_mark_succeeded,
     job_update_script,
 )
+from app.media_store import media_insert, media_list_by_owner
 from app.schemas import GenerateResponse, LanguageCode
 from app.services.branding_logo import save_branding_logo_from_upload
 from app.services.user_assets import (
@@ -340,6 +341,33 @@ async def health(request: Request):
     return body
 
 
+# ---------------------------------------------------------------------------
+# Media library — internal endpoint called by the Next.js frontend proxy
+# ---------------------------------------------------------------------------
+
+
+@app.get("/internal/user-media")
+async def internal_user_media(
+    request: Request,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    type: str | None = Query(None, alias="type"),
+):
+    """Return media items for the authenticated user.
+
+    Trusted: only the frontend container should call this endpoint (via
+    nginx routing).  The user's email is passed in X-User-Email by the
+    Next.js API route after verifying the NextAuth session server-side.
+    """
+    email = (request.headers.get("x-user-email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="Missing user identity")
+    if session is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    media_type = type if type in ("video", "image", "voice") else None
+    items = await media_list_by_owner(session, email, media_type=media_type)
+    return {"items": items}
+
+
 def _parse_language_form(raw: str) -> LanguageCode:
     v = (raw or "en").strip().lower()
     if v not in ("en", "hi", "mr"):
@@ -460,6 +488,7 @@ async def generate(
     address: Annotated[str, Form()] = "",
     content_format: Annotated[str, Form()] = "",
     output_quality: Annotated[str, Form()] = "",
+    user_email: Annotated[str, Form()] = "",
 ):
     settings = load_settings()
     _validate_persistence_config(settings)
@@ -960,6 +989,22 @@ async def generate(
         if settings.artifact_cleanup_after_s3:
             background_tasks.add_task(_cleanup_job_dir, str(job_dir.resolve()))
 
+    ue = (user_email or "").strip()
+    if ue and persist and session is not None:
+        try:
+            await media_insert(
+                session,
+                owner_email=ue,
+                media_type="video",
+                title=topic[:200],
+                media_url=f"/media/{job_id}/output.mp4",
+                source_service="topic-to-video",
+                thumbnail_url=None,
+                extra={"job_id": job_id, "visual_mode": visual_mode, "tts_provider": tts_provider},
+            )
+        except Exception:
+            logger.warning("job=%s media_insert failed (non-fatal)", job_id, exc_info=True)
+
     total_elapsed = time.perf_counter() - t_pipeline_start
     stage_summary = " ".join(f"{k}={v:.1f}s" for k, v in stage_times.items())
     logger.info(
@@ -1077,11 +1122,13 @@ _PORTRAIT_STYLE_PREFIX = {
 
 @app.post("/api/generate-image")
 async def api_generate_image(
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
     prompt: Annotated[str, Form()],
     style: Annotated[str, Form()] = "photorealistic",
     aspect_ratio: Annotated[str, Form()] = "1:1",
     count: Annotated[int, Form()] = 1,
     image: UploadFile | None = File(None),
+    user_email: Annotated[str, Form()] = "",
 ):
     """Standalone image generation using 3-tier model failover.
 
@@ -1137,8 +1184,24 @@ async def api_generate_image(
             detail=f"All image generation attempts failed: {'; '.join(errors)}",
         )
 
+    img_job_id = uuid.uuid4().hex[:12]
+    ue = (user_email or "").strip()
+    if ue and session is not None and images:
+        try:
+            await media_insert(
+                session,
+                owner_email=ue,
+                media_type="image",
+                title=prompt_clean[:200],
+                media_url=images[0]["url"],
+                source_service="text-to-image",
+                extra={"style": style, "count": len(images), "images": images},
+            )
+        except Exception:
+            logger.warning("generate-image media_insert failed (non-fatal)", exc_info=True)
+
     return {
-        "job_id": uuid.uuid4().hex[:12],
+        "job_id": img_job_id,
         "images": images,
         "prompt_used": full_prompt[:300],
     }
@@ -1146,11 +1209,13 @@ async def api_generate_image(
 
 @app.post("/api/photo-to-video")
 async def api_photo_to_video(
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
     photo: Annotated[UploadFile, File()],
     motion_prompt: Annotated[str, Form()] = "",
     duration: Annotated[int, Form()] = 8,
     camera_movement: Annotated[str, Form()] = "zoom_in",
     aspect_ratio: Annotated[str, Form()] = "16:9",
+    user_email: Annotated[str, Form()] = "",
 ):
     """Generate video from a photo using Google Veo3."""
     from app.services.veo3_video import generate_video_from_image, Veo3Error
@@ -1191,9 +1256,26 @@ async def api_photo_to_video(
         raise HTTPException(status_code=500, detail="Video generation failed") from e
 
     job_dir_name = video_path.parent.name
+    video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
+
+    ue = (user_email or "").strip()
+    if ue and session is not None:
+        try:
+            await media_insert(
+                session,
+                owner_email=ue,
+                media_type="video",
+                title=(motion_prompt or "Photo to video")[:200],
+                media_url=video_url,
+                source_service="photo-to-video",
+                extra={"duration": duration, "camera": camera_movement, "model": "veo-3.0"},
+            )
+        except Exception:
+            logger.warning("photo-to-video media_insert failed (non-fatal)", exc_info=True)
+
     return {
         "job_id": job_dir_name,
-        "video_url": f"/media/veo3/{job_dir_name}/{video_path.name}",
+        "video_url": video_url,
         "duration_seconds": duration,
         "width": 1920 if aspect_ratio == "16:9" else (1080 if aspect_ratio == "9:16" else 1080),
         "height": 1080 if aspect_ratio == "16:9" else (1920 if aspect_ratio == "9:16" else 1080),
@@ -1203,6 +1285,7 @@ async def api_photo_to_video(
 
 @app.post("/api/image-to-ad")
 async def api_image_to_ad(
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
     product_image: Annotated[UploadFile, File()],
     ad_copy: Annotated[str, Form()] = "",
     cta_text: Annotated[str, Form()] = "",
@@ -1211,6 +1294,7 @@ async def api_image_to_ad(
     aspect_ratio: Annotated[str, Form()] = "9:16",
     brand_color: Annotated[str, Form()] = "#8b5cf6",
     logo: Annotated[UploadFile | None, File()] = None,
+    user_email: Annotated[str, Form()] = "",
 ):
     """Generate an ad video from a product image using Google Veo3."""
     from app.services.veo3_video import generate_video_from_image, Veo3Error
@@ -1250,9 +1334,26 @@ async def api_image_to_ad(
         raise HTTPException(status_code=500, detail="Ad video generation failed") from e
 
     job_dir_name = video_path.parent.name
+    ad_video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
+
+    ue = (user_email or "").strip()
+    if ue and session is not None:
+        try:
+            await media_insert(
+                session,
+                owner_email=ue,
+                media_type="video",
+                title=(ad_copy or "Image to Ad video")[:200],
+                media_url=ad_video_url,
+                source_service="image-to-ad",
+                extra={"template": template, "duration": duration, "model": "veo-3.0"},
+            )
+        except Exception:
+            logger.warning("image-to-ad media_insert failed (non-fatal)", exc_info=True)
+
     return {
         "job_id": job_dir_name,
-        "video_url": f"/media/veo3/{job_dir_name}/{video_path.name}",
+        "video_url": ad_video_url,
         "duration_seconds": duration,
         "width": 1920 if aspect_ratio == "16:9" else (1080 if aspect_ratio == "9:16" else 1080),
         "height": 1080 if aspect_ratio == "16:9" else (1920 if aspect_ratio == "9:16" else 1080),
@@ -1262,10 +1363,12 @@ async def api_image_to_ad(
 
 @app.post("/api/generate-voice")
 async def api_generate_voice(
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
     text: Annotated[str, Form()],
     language: Annotated[str, Form()] = "en",
     voice: Annotated[str, Form()] = "",
     speed: Annotated[float, Form()] = 1.0,
+    user_email: Annotated[str, Form()] = "",
 ):
     """Generate speech audio from text using Google TTS / ElevenLabs."""
     settings = get_settings()
@@ -1320,9 +1423,26 @@ async def api_generate_voice(
     except Exception:
         pass
 
+    audio_url = f"/media/voice/{job_id}/{audio_path.name}"
+
+    ue = (user_email or "").strip()
+    if ue and session is not None:
+        try:
+            await media_insert(
+                session,
+                owner_email=ue,
+                media_type="voice",
+                title=text_clean[:200],
+                media_url=audio_url,
+                source_service="text-to-voice",
+                extra={"duration": round(duration, 1), "tts_provider": tts_provider, "voice": voice or "auto"},
+            )
+        except Exception:
+            logger.warning("generate-voice media_insert failed (non-fatal)", exc_info=True)
+
     return {
         "job_id": job_id,
-        "audio_url": f"/media/voice/{job_id}/{audio_path.name}",
+        "audio_url": audio_url,
         "duration_seconds": round(duration, 1),
         "tts_provider": tts_provider,
         "voice_used": voice or "auto",

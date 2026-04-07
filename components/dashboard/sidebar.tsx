@@ -6,6 +6,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import {
   Home,
   FolderKanban,
+  GalleryHorizontalEnd,
   Settings,
   Film,
   ImageIcon,
@@ -17,6 +18,7 @@ import { cn } from "@/lib/utils";
 
 const mainLinks = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
+  { href: "/dashboard/media", label: "Media Library", icon: GalleryHorizontalEnd },
   { href: "/dashboard/projects", label: "Projects", icon: FolderKanban },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];

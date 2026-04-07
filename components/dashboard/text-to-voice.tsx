@@ -13,6 +13,7 @@ import {
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { useAuth } from "@/lib/auth-context";
 import {
   fetchVoices,
   ttsPreviewUrl,
@@ -40,6 +41,7 @@ const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
 
 export function TextToVoice() {
+  const { userEmail } = useAuth();
   const [text, setText] = useState("");
   const [language, setLanguage] = useState("en");
   const [voiceName, setVoiceName] = useState("");
@@ -84,6 +86,7 @@ export function TextToVoice() {
     fd.append("language", language);
     fd.append("speed", String(speed));
     if (voiceName) fd.append("voice", voiceName);
+    if (userEmail) fd.append("user_email", userEmail);
 
     try {
       const res = await generateVoice(fd);

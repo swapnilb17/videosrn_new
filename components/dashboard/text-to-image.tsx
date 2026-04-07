@@ -16,6 +16,7 @@ import {
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { useAuth } from "@/lib/auth-context";
 import { generateImage, type GenerateImageResponse } from "@/lib/api";
 
 const TEXT_STYLES = [
@@ -62,6 +63,7 @@ const ACCEPTED_IMAGE_TYPES = "image/jpeg,image/png,image/webp";
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB
 
 export function TextToImage() {
+  const { userEmail } = useAuth();
   const [prompt, setPrompt] = useState("");
   const [style, setStyle] = useState("photorealistic");
   const [aspect, setAspect] = useState("1:1");
@@ -135,6 +137,8 @@ export function TextToImage() {
     if (uploadedImage) {
       fd.append("image", uploadedImage);
     }
+
+    if (userEmail) fd.append("user_email", userEmail);
 
     try {
       const res = await generateImage(fd);

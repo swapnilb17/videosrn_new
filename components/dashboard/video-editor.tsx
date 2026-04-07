@@ -21,6 +21,7 @@ import {
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { useAuth } from "@/lib/auth-context";
 import {
   generateVideo,
   fetchVoices,
@@ -116,6 +117,7 @@ function FileUploadField({
 }
 
 export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
+  const { userEmail } = useAuth();
   // --- Left panel state ---
   const [topic, setTopic] = useState("");
   const [language, setLanguage] = useState("en");
@@ -185,6 +187,7 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     if (ctaFile) fd.append("cta_image", ctaFile);
     if (thumbFile) fd.append("thumbnail_image", thumbFile);
     if (address.trim()) fd.append("address", address.trim());
+    if (userEmail) fd.append("user_email", userEmail);
 
     try {
       const res = await generateVideo(fd);

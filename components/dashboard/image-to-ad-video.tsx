@@ -18,6 +18,7 @@ import {
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { useAuth } from "@/lib/auth-context";
 import { imageToAdVideo, type ImageToAdResponse } from "@/lib/api";
 
 const AD_TEMPLATES = [
@@ -45,6 +46,7 @@ const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
 
 export function ImageToAdVideo() {
+  const { userEmail } = useAuth();
   const productRef = useRef<HTMLInputElement>(null);
   const logoRef = useRef<HTMLInputElement>(null);
   const [productImage, setProductImage] = useState<File | null>(null);
@@ -80,6 +82,7 @@ export function ImageToAdVideo() {
     fd.append("aspect_ratio", aspect);
     fd.append("brand_color", brandColor);
     if (logoFile) fd.append("logo", logoFile);
+    if (userEmail) fd.append("user_email", userEmail);
 
     try {
       const res = await imageToAdVideo(fd);

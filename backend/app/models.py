@@ -11,6 +11,26 @@ class Base(DeclarativeBase):
     pass
 
 
+class MediaItem(Base):
+    """Tracks every generated artifact (video, image, voice) per user for the media library."""
+
+    __tablename__ = "media_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    media_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    media_url: Mapped[str] = mapped_column(Text, nullable=False)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_service: Mapped[str] = mapped_column(String(64), nullable=False)
+    extra: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class Job(Base):
     __tablename__ = "jobs"
 

@@ -159,3 +159,27 @@ export async function imageToAdVideo(fd: FormData): Promise<ImageToAdResponse> {
   const res = await fetch("/api/image-to-ad", { method: "POST", body: fd, credentials: "include" });
   return handleResponse<ImageToAdResponse>(res);
 }
+
+// ---------------------------------------------------------------------------
+// Media Library
+// ---------------------------------------------------------------------------
+
+export type MediaItemResponse = {
+  id: string;
+  media_type: "video" | "image" | "voice";
+  title: string;
+  media_url: string;
+  thumbnail_url: string | null;
+  source_service: string;
+  extra: Record<string, unknown> | null;
+  created_at: string | null;
+};
+
+export async function fetchUserMedia(
+  type?: string,
+): Promise<MediaItemResponse[]> {
+  const qs = type ? `?type=${encodeURIComponent(type)}` : "";
+  const res = await fetch(`/api/user-media${qs}`, { credentials: "include" });
+  const data = await handleResponse<{ items: MediaItemResponse[] }>(res);
+  return data.items;
+}
