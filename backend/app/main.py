@@ -165,6 +165,9 @@ if _oauth_bootstrap.google_oauth_enabled():
 
 app.include_router(google_auth_router)
 
+# In-memory tracker for async video jobs (status + result/error)
+_job_results: dict[str, dict] = {}
+
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -368,6 +371,20 @@ async def internal_user_media(
     return {"items": items}
 
 
+# ---------------------------------------------------------------------------
+# Job status polling (async video pipeline)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/jobs/{job_id}/status")
+async def job_status(job_id: str):
+    """Poll for the result of an async /generate job."""
+    entry = _job_results.get(job_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    return entry
+
+
 def _parse_language_form(raw: str) -> LanguageCode:
     v = (raw or "en").strip().lower()
     if v not in ("en", "hi", "mr"):
@@ -469,7 +486,7 @@ def _parse_enhance_motion_form(raw: str | None) -> bool:
     return s in ("1", "true", "yes", "on")
 
 
-@app.post("/generate", response_model=GenerateResponse)
+@app.post("/generate", status_code=202)
 @limiter.limit(_limiter_bootstrap.rate_limit_generate_effective())
 async def generate(
     request: Request,
@@ -582,13 +599,6 @@ async def generate(
         applied_output_quality or "-",
     )
 
-    t_pipeline_start = time.perf_counter()
-    stage_times: dict[str, float] = {}
-
-    async def _fail(msg: str) -> None:
-        if persist and session is not None:
-            await job_mark_failed(session, job_uuid, msg)
-
     if persist:
         await job_insert_running(
             session,
@@ -599,6 +609,143 @@ async def generate(
             owner_sub=owner_sub,
         )
 
+    _job_results[job_id] = {"job_id": job_id, "status": "running"}
+
+    asyncio.create_task(
+        _run_video_pipeline(
+            job_id=job_id,
+            job_uuid=job_uuid,
+            job_dir=job_dir,
+            settings=settings,
+            topic=topic,
+            lang=lang,
+            target_sec=target_sec,
+            enhance_kb=enhance_kb,
+            gcp_voice_choice=gcp_voice_choice,
+            visual_settings=visual_settings,
+            applied_content_format=applied_content_format,
+            applied_output_quality=applied_output_quality,
+            overlay_assets=overlay_assets,
+            branding_applied=branding_applied,
+            product_applied=product_applied,
+            cta_applied=cta_applied,
+            thumb_file=thumb_file,
+            thumbnail_applied=thumbnail_applied,
+            address_norm=address_norm,
+            user_email=user_email,
+            owner_sub=owner_sub,
+        )
+    )
+
+    return {"job_id": job_id, "status": "running"}
+
+
+async def _run_video_pipeline(
+    *,
+    job_id: str,
+    job_uuid: uuid.UUID,
+    job_dir: Path,
+    settings: Settings,
+    topic: str,
+    lang: str,
+    target_sec: int,
+    enhance_kb: bool,
+    gcp_voice_choice: str | None,
+    visual_settings,
+    applied_content_format: str | None,
+    applied_output_quality: str | None,
+    overlay_assets: FrameOverlayAssets,
+    branding_applied: bool,
+    product_applied: bool,
+    cta_applied: bool,
+    thumb_file: Path,
+    thumbnail_applied: bool,
+    address_norm: str,
+    user_email: str,
+    owner_sub: str | None,
+) -> None:
+    """Run the full video pipeline in the background; update _job_results on completion."""
+    session_factory = getattr(app.state, "session_factory", None)
+    session: AsyncSession | None = None
+    persist = settings.persistence_enabled() and session_factory is not None
+
+    if persist and session_factory is not None:
+        session = session_factory()
+
+    try:
+        await _do_video_pipeline(
+            job_id=job_id,
+            job_uuid=job_uuid,
+            job_dir=job_dir,
+            settings=settings,
+            topic=topic,
+            lang=lang,
+            target_sec=target_sec,
+            enhance_kb=enhance_kb,
+            gcp_voice_choice=gcp_voice_choice,
+            visual_settings=visual_settings,
+            applied_content_format=applied_content_format,
+            applied_output_quality=applied_output_quality,
+            overlay_assets=overlay_assets,
+            branding_applied=branding_applied,
+            product_applied=product_applied,
+            cta_applied=cta_applied,
+            thumb_file=thumb_file,
+            thumbnail_applied=thumbnail_applied,
+            address_norm=address_norm,
+            user_email=user_email,
+            owner_sub=owner_sub,
+            session=session,
+            persist=persist,
+        )
+    except Exception as exc:
+        logger.exception("job=%s pipeline failed: %s", job_id, exc)
+        _job_results[job_id] = {"job_id": job_id, "status": "failed", "error": str(exc)}
+        if persist and session is not None:
+            try:
+                await job_mark_failed(session, job_uuid, str(exc)[:4000])
+            except Exception:
+                logger.warning("job=%s mark_failed after crash also failed", job_id, exc_info=True)
+    finally:
+        if session is not None:
+            await session.close()
+
+
+async def _do_video_pipeline(
+    *,
+    job_id: str,
+    job_uuid: uuid.UUID,
+    job_dir: Path,
+    settings: Settings,
+    topic: str,
+    lang: str,
+    target_sec: int,
+    enhance_kb: bool,
+    gcp_voice_choice: str | None,
+    visual_settings,
+    applied_content_format: str | None,
+    applied_output_quality: str | None,
+    overlay_assets: FrameOverlayAssets,
+    branding_applied: bool,
+    product_applied: bool,
+    cta_applied: bool,
+    thumb_file: Path,
+    thumbnail_applied: bool,
+    address_norm: str,
+    user_email: str,
+    owner_sub: str | None,
+    session: AsyncSession | None,
+    persist: bool,
+) -> None:
+    """Inner pipeline logic (extracted so _run_video_pipeline can catch all errors)."""
+    t_pipeline_start = time.perf_counter()
+    stage_times: dict[str, float] = {}
+
+    async def _fail(msg: str) -> None:
+        if persist and session is not None:
+            await job_mark_failed(session, job_uuid, msg)
+        _job_results[job_id] = {"job_id": job_id, "status": "failed", "error": msg}
+
     t0 = time.perf_counter()
     try:
         script = await generate_script(
@@ -608,12 +755,9 @@ async def generate(
             target_duration_seconds=target_sec,
             conversational=enhance_kb,
         )
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         await _fail(str(e))
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except RuntimeError as e:
-        await _fail(str(e))
-        raise HTTPException(status_code=503, detail=str(e)) from e
+        return
     stage_times["script_generation"] = time.perf_counter() - t0
     logger.info("job=%s TIMING script_generation=%.1fs", job_id, stage_times["script_generation"])
 
@@ -987,7 +1131,7 @@ async def generate(
         stage_times["s3_upload"] = time.perf_counter() - t0
         logger.info("job=%s TIMING s3_upload=%.1fs", job_id, stage_times["s3_upload"])
         if settings.artifact_cleanup_after_s3:
-            background_tasks.add_task(_cleanup_job_dir, str(job_dir.resolve()))
+            await asyncio.to_thread(_cleanup_job_dir, str(job_dir.resolve()))
 
     ue = (user_email or "").strip()
     if ue and persist and session is not None:
@@ -1014,25 +1158,16 @@ async def generate(
         stage_summary,
     )
 
-    return GenerateResponse(
-        job_id=job_id,
-        target_duration_seconds=target_sec,
-        script=script,
-        mp3_url=f"/media/{job_id}/voiceover.mp3",
-        mp4_url=f"/media/{job_id}/output.mp4",
-        video_width=visual_settings.video_width,
-        video_height=visual_settings.video_height,
-        content_format_applied=applied_content_format,
-        output_quality_applied=applied_output_quality,
-        tts_provider=tts_provider,
-        visual_mode=visual_mode,
-        visual_detail=visual_detail,
-        branding_logo_applied=branding_applied,
-        product_image_applied=product_applied,
-        cta_image_applied=cta_applied,
-        address_applied=bool(address_norm),
-        thumbnail_attached=thumbnail_attached,
-    )
+    _job_results[job_id] = {
+        "job_id": job_id,
+        "status": "done",
+        "mp3_url": f"/media/{job_id}/voiceover.mp3",
+        "mp4_url": f"/media/{job_id}/output.mp4",
+        "video_width": visual_settings.video_width,
+        "video_height": visual_settings.video_height,
+        "tts_provider": tts_provider,
+        "visual_mode": visual_mode,
+    }
 
 
 # ---------------------------------------------------------------------------

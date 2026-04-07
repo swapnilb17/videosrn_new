@@ -23,11 +23,12 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
 import {
-  generateVideo,
+  submitVideoJob,
+  pollJobStatus,
   fetchVoices,
   ttsPreviewUrl,
   mediaDownloadUrl,
-  type GenerateResponse,
+  type JobStatusResponse,
   type VoiceInfo,
 } from "@/lib/api";
 
@@ -141,7 +142,8 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
   // --- Generation state ---
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<GenerateResponse | null>(null);
+  const [result, setResult] = useState<JobStatusResponse | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // --- Preview audio ---
   const [previewAudioSrc, setPreviewAudioSrc] = useState<string | null>(null);
@@ -168,11 +170,21 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     setPreviewAudioSrc(ttsPreviewUrl(voiceName, language));
   }
 
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, []);
+
   async function handleGenerate() {
     if (!topic.trim()) return;
     setGenerating(true);
     setError(null);
     setResult(null);
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
 
     const fd = new FormData();
     fd.append("topic", topic.trim());
@@ -190,12 +202,29 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     if (userEmail) fd.append("user_email", userEmail);
 
     try {
-      const res = await generateVideo(fd);
-      setResult(res);
+      const { job_id } = await submitVideoJob(fd);
+
+      pollingRef.current = setInterval(async () => {
+        try {
+          const status = await pollJobStatus(job_id);
+          if (status.status === "done") {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            setResult(status);
+            setGenerating(false);
+          } else if (status.status === "failed") {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            setError(status.error || "Generation failed");
+            setGenerating(false);
+          }
+        } catch {
+          // transient poll failure — keep trying
+        }
+      }, 4000);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Generation failed";
       setError(msg);
-    } finally {
       setGenerating(false);
     }
   }
@@ -395,50 +424,17 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
                   src={result.mp4_url}
                   controls
                   className="w-full"
-                  poster={result.thumbnail_attached ? undefined : undefined}
                 />
               </div>
 
               {/* Metadata badges */}
               <div className="flex flex-wrap gap-2">
-                <Badge label="TTS" value={result.tts_provider} />
-                <Badge label="Visual" value={result.visual_mode.replace(/_/g, " ")} />
-                {result.content_format_applied && (
-                  <Badge label="Format" value={result.content_format_applied.replace(/_/g, " ")} />
+                {result.tts_provider && <Badge label="TTS" value={result.tts_provider} />}
+                {result.visual_mode && <Badge label="Visual" value={result.visual_mode.replace(/_/g, " ")} />}
+                {result.video_width && result.video_height && (
+                  <Badge label="Size" value={`${result.video_width}×${result.video_height}`} />
                 )}
-                {result.output_quality_applied && (
-                  <Badge label="Quality" value={result.output_quality_applied} />
-                )}
-                <Badge label="Size" value={`${result.video_width}×${result.video_height}`} />
-                {result.branding_logo_applied && <Badge label="Logo" value="✓" />}
-                {result.product_image_applied && <Badge label="Product" value="✓" />}
-                {result.cta_image_applied && <Badge label="CTA" value="✓" />}
-                {result.address_applied && <Badge label="Address" value="✓" />}
-                {result.thumbnail_attached && <Badge label="Thumb" value="✓" />}
               </div>
-
-              {/* Script display */}
-              <details className="rounded-xl border border-white/10 bg-[#0f1325]">
-                <summary className="cursor-pointer p-3 text-sm font-medium text-slate-300">
-                  View Script
-                </summary>
-                <div className="space-y-2 border-t border-white/10 p-3 text-xs text-slate-400">
-                  <p>
-                    <strong className="text-slate-300">Hook:</strong>{" "}
-                    {result.script.hook}
-                  </p>
-                  {result.script.facts.map((fact, i) => (
-                    <p key={i}>
-                      <strong className="text-slate-300">Fact {i + 1}:</strong>{" "}
-                      {fact}
-                    </p>
-                  ))}
-                  <p>
-                    <strong className="text-slate-300">Ending:</strong>{" "}
-                    {result.script.ending}
-                  </p>
-                </div>
-              </details>
 
               {/* Download */}
               <a
