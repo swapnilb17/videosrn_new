@@ -1,23 +1,16 @@
-"""Standalone image generation with failover.
+"""Standalone image generation with failover (Gemini / Vertex only).
 
-Portrait mode (reference image provided):
-  Tier 0:  OpenAI images.edit (dall-e-2 only; enforced in Settings)
-  Tier 1+: Gemini / Vertex fallback
-
-Text-to-image mode (no reference image):
-  Tier 1:  Gemini 3.1 Flash Preview (native generateContent)
-  Tier 2:  Vertex Gemini 2.5 Flash (Vertex generateContent)
+With or without a reference image (portrait):
+  Tier 1:  Gemini 3.1 Flash Preview (native generateContent + GEMINI_API_KEY)
+  Tier 2:  Vertex Gemini 2.5 Flash image (service account)
   Tier 3:  Vertex Imagen (:predict)
 """
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import logging
 import uuid
 from pathlib import Path
-from typing import Any
 
 import httpx
 
@@ -35,7 +28,6 @@ from app.services.vertex_imagen import (
     _credentials_path,
     _generate_one_with_region_failover as vertex_imagen_generate_one,
 )
-from app.services.openai_portrait import OpenAIPortraitError, generate_openai_portrait
 from app.services.image_watermark import watermark_file
 
 logger = logging.getLogger(__name__)
@@ -66,7 +58,7 @@ async def generate_standalone_image(
     output_dir: Path | None = None,
     reference_image: bytes | None = None,
 ) -> ImageGenResult:
-    """Generate a single image using the 3-tier failover chain.
+    """Generate a single image using the Gemini / Vertex failover chain.
 
     When *reference_image* is provided the user's photo is sent alongside the
     prompt so the model can produce a face-preserving stylised portrait.
@@ -94,24 +86,6 @@ async def generate_standalone_image(
         w, h = 1024, 768
 
     timeout = max(30.0, settings.gemini_timeout)
-
-    # Tier 0: OpenAI images.edit (portrait mode only)
-    openai_key = (settings.openai_api_key or "").strip()
-    openai_edit_model = (settings.openai_image_edit_model or "dall-e-2").strip() or "dall-e-2"
-    if reference_image and openai_key:
-        try:
-            await generate_openai_portrait(
-                openai_key, reference_image, prompt, out_path,
-                model=openai_edit_model,
-                aspect_ratio=aspect_ratio,
-                timeout=max(60.0, settings.openai_timeout),
-            )
-            if out_path.is_file() and out_path.stat().st_size > 100:
-                watermark_file(out_path)
-                logger.info("Standalone image: OpenAI portrait OK")
-                return ImageGenResult(out_path, w, h, openai_edit_model)
-        except (OpenAIPortraitError, Exception) as e:
-            logger.warning("Standalone image: OpenAI portrait failed: %s", e)
 
     # Tier 1: Gemini 3.1 Flash Preview (native)
     if patched.gemini_native_image_configured():
