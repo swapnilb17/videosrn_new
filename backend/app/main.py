@@ -51,7 +51,12 @@ from app.services.vertex_gemini_image import VertexGeminiImageError, generate_ve
 from app.services.image_prompts import script_visual_segments
 from app.services.mux_mp4 import mux_still_image_and_audio
 from app.services.nano_banana import NanoBananaError, generate_slide_images
-from app.services.s3_storage import S3UploadError, safe_presign_get, upload_job_directory
+from app.services.s3_storage import (
+    S3UploadError,
+    safe_presign_get,
+    upload_job_directory,
+    upload_veo3_mp4,
+)
 from app.services.script_openai import generate_script
 from app.services.slide_image_plan import visibility_by_slide_stem
 from app.services.slide_product_composite import composite_user_product_onto_slide
@@ -220,6 +225,34 @@ def _media_file(settings: Settings, job_id: str, filename: str) -> Path:
     if not path.is_file():
         raise HTTPException(status_code=404, detail="File not ready")
     return path
+
+
+async def _persist_veo3_output_to_s3(settings: Settings, video_path: Path) -> None:
+    """Copy Veo MP4 to S3 when bucket/region are configured; optionally remove local copy."""
+    if not settings.s3_object_storage_configured():
+        return
+    job_dir = video_path.parent.name
+    try:
+        await asyncio.to_thread(
+            upload_veo3_mp4,
+            settings,
+            job_dir,
+            video_path.name,
+            video_path,
+        )
+    except S3UploadError as e:
+        logger.warning("Veo video S3 upload failed (local file kept): %s", e)
+        return
+    if settings.artifact_cleanup_after_s3:
+
+        def _rm_local() -> None:
+            video_path.unlink(missing_ok=True)
+            try:
+                video_path.parent.rmdir()
+            except OSError:
+                pass
+
+        await asyncio.to_thread(_rm_local)
 
 
 @app.get("/")
@@ -1187,12 +1220,20 @@ async def serve_generated_image(job_dir: str, filename: str):
 
 @app.get("/media/veo3/{job_dir}/{filename}")
 async def serve_veo3_video(job_dir: str, filename: str):
-    """Serve Veo3 generated videos."""
+    """Serve Veo-generated videos from local disk, or redirect to S3 presigned URL when applicable."""
     settings = get_settings()
     file_path = settings.artifact_root / job_dir / filename
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Video not found")
-    return FileResponse(file_path, media_type="video/mp4")
+    if file_path.is_file():
+        return FileResponse(file_path, media_type="video/mp4")
+    if settings.s3_object_storage_configured():
+        key = settings.s3_key_for_veo3(job_dir, filename)
+        try:
+            url = await asyncio.to_thread(safe_presign_get, settings, key)
+            return RedirectResponse(url=url, status_code=302)
+        except S3UploadError as e:
+            logger.warning("veo3 presign failed job_dir=%s file=%s: %s", job_dir, filename, e)
+            raise HTTPException(status_code=503, detail="Could not sign media URL") from e
+    raise HTTPException(status_code=404, detail="Video not found")
 
 
 @app.get("/media/voice/{job_id}/{filename}")
@@ -1397,8 +1438,11 @@ async def api_photo_to_video(
         logger.exception("photo-to-video failed: %s", e)
         raise HTTPException(status_code=500, detail="Video generation failed") from e
 
+    await _persist_veo3_output_to_s3(settings, video_path)
+
     job_dir_name = video_path.parent.name
     video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
+    veo_model = (settings.vertex_veo_model or "").strip() or "veo-3.0-generate-001"
 
     ue = (user_email or "").strip()
     if ue and session is not None:
@@ -1410,7 +1454,7 @@ async def api_photo_to_video(
                 title=(motion_prompt or "Photo to video")[:200],
                 media_url=video_url,
                 source_service="photo-to-video",
-                extra={"duration": duration, "camera": camera_movement, "model": "veo-3.0"},
+                extra={"duration": duration, "camera": camera_movement, "model": veo_model},
             )
         except Exception:
             logger.warning("photo-to-video media_insert failed (non-fatal)", exc_info=True)
@@ -1421,7 +1465,7 @@ async def api_photo_to_video(
         "duration_seconds": duration,
         "width": 1920 if aspect_ratio == "16:9" else (1080 if aspect_ratio == "9:16" else 1080),
         "height": 1080 if aspect_ratio == "16:9" else (1920 if aspect_ratio == "9:16" else 1080),
-        "model": "veo-3.0",
+        "model": veo_model,
     }
 
 
@@ -1475,8 +1519,11 @@ async def api_image_to_ad(
         logger.exception("image-to-ad failed: %s", e)
         raise HTTPException(status_code=500, detail="Ad video generation failed") from e
 
+    await _persist_veo3_output_to_s3(settings, video_path)
+
     job_dir_name = video_path.parent.name
     ad_video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
+    veo_model = (settings.vertex_veo_model or "").strip() or "veo-3.0-generate-001"
 
     ue = (user_email or "").strip()
     if ue and session is not None:
@@ -1488,7 +1535,7 @@ async def api_image_to_ad(
                 title=(ad_copy or "Image to Ad video")[:200],
                 media_url=ad_video_url,
                 source_service="image-to-ad",
-                extra={"template": template, "duration": duration, "model": "veo-3.0"},
+                extra={"template": template, "duration": duration, "model": veo_model},
             )
         except Exception:
             logger.warning("image-to-ad media_insert failed (non-fatal)", exc_info=True)
@@ -1499,7 +1546,7 @@ async def api_image_to_ad(
         "duration_seconds": duration,
         "width": 1920 if aspect_ratio == "16:9" else (1080 if aspect_ratio == "9:16" else 1080),
         "height": 1080 if aspect_ratio == "16:9" else (1920 if aspect_ratio == "9:16" else 1080),
-        "model": "veo-3.0",
+        "model": veo_model,
     }
 
 

@@ -121,6 +121,17 @@ class Settings(BaseSettings):
         validation_alias="VERTEX_IMAGEN_REGIONS",
     )
 
+    # Vertex Veo video (same SA + project as Imagen). GA models: veo-3.0-generate-001, veo-3.1-generate-001, etc.
+    vertex_veo_model: str = Field(
+        default="veo-3.0-generate-001",
+        validation_alias=AliasChoices("VERTEX_VEO_MODEL", "VEO_VERTEX_MODEL"),
+    )
+    # Required for predictLongRunning output — e.g. gs://your-bucket/veo-output/ (writes under this prefix).
+    vertex_veo_storage_uri: str = Field(
+        default="",
+        validation_alias=AliasChoices("VERTEX_VEO_STORAGE_URI", "VEO_STORAGE_URI"),
+    )
+
     nano_banana_api_key: str = Field(default="", validation_alias="NANO_BANANA_API_KEY")
     nano_banana_base_url: str = Field(
         default="https://api.nanobananaimages.com",
@@ -246,6 +257,20 @@ class Settings(BaseSettings):
         if not p.endswith("/"):
             p += "/"
         return f"{p}{job_id}/"
+
+    def s3_key_for_veo3(self, job_dir: str, filename: str) -> str:
+        """Object key for Veo standalone videos under the configured S3 prefix."""
+        p = (self.s3_prefix or "").strip()
+        base = f"veo3/{job_dir}/{filename}"
+        if not p:
+            return base
+        if not p.endswith("/"):
+            p += "/"
+        return f"{p}{base}"
+
+    def s3_object_storage_configured(self) -> bool:
+        """Bucket + region set (used for uploads; does not require DATABASE_URL)."""
+        return bool((self.s3_bucket or "").strip() and (self.s3_region or "").strip())
 
     def elevenlabs_voice_for_language(self, language: str) -> str:
         lang = language.lower()

@@ -112,6 +112,14 @@ def safe_upload(
         raise S3UploadError(str(e)) from e
 
 
+def upload_veo3_mp4(settings: Settings, job_dir: str, filename: str, local_path: Path) -> str:
+    """Upload a Veo-generated MP4 to S3; returns the object key."""
+    key = settings.s3_key_for_veo3(job_dir, filename)
+    safe_upload(settings, local_path, key, content_type="video/mp4")
+    logger.info("S3 uploaded Veo video s3://%s/%s", (settings.s3_bucket or "").strip(), key)
+    return key
+
+
 def safe_presign_get(
     settings: Settings,
     key: str,
