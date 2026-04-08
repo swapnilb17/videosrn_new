@@ -74,6 +74,14 @@ def _veo_model(settings: Settings) -> str:
     return m or "veo-3.0-generate-001"
 
 
+def _veo_person_generation(settings: Settings) -> str:
+    """Vertex Veo `personGeneration`: allow_adult | disallow."""
+    v = (settings.vertex_veo_person_generation or "").strip().lower()
+    if v in ("allow_adult", "disallow"):
+        return v
+    return "allow_adult"
+
+
 def _veo_storage_prefix(settings: Settings, job_id: str) -> str:
     raw = (settings.vertex_veo_storage_uri or "").strip()
     if not raw:
@@ -346,6 +354,7 @@ async def generate_video_from_image(
             "durationSeconds": duration,
             "storageUri": storage_uri,
             "resizeMode": "pad",
+            "personGeneration": _veo_person_generation(settings),
         },
     }
 
@@ -419,6 +428,7 @@ async def generate_video_from_prompt(
             "sampleCount": 1,
             "durationSeconds": duration,
             "storageUri": storage_uri,
+            "personGeneration": _veo_person_generation(settings),
         },
     }
 
