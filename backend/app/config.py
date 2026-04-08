@@ -142,7 +142,7 @@ class Settings(BaseSettings):
         default="gs://veo_enablyai/",
         validation_alias=AliasChoices("VERTEX_VEO_STORAGE_URI", "VEO_STORAGE_URI"),
     )
-    # Veo predict params: allow_adult (default) | disallow — see Vertex video generation REST docs.
+    # Veo personGeneration: allow_all | allow_adult (default) | disallow — RAI docs + support codes (e.g. 17301594).
     vertex_veo_person_generation: str = Field(
         default="allow_adult",
         validation_alias="VERTEX_VEO_PERSON_GENERATION",

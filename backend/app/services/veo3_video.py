@@ -75,9 +75,9 @@ def _veo_model(settings: Settings) -> str:
 
 
 def _veo_person_generation(settings: Settings) -> str:
-    """Vertex Veo `personGeneration`: allow_adult | disallow."""
+    """Vertex Veo `personGeneration` (see responsible AI guidelines)."""
     v = (settings.vertex_veo_person_generation or "").strip().lower()
-    if v in ("allow_adult", "disallow"):
+    if v in ("allow_all", "allow_adult", "disallow"):
         return v
     return "allow_adult"
 
