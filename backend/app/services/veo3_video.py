@@ -37,12 +37,36 @@ def _predict_url(project: str, region: str, model_id: str) -> str:
     )
 
 
-def _fetch_predict_url(project: str, region: str, model_id: str) -> str:
-    """Poll Veo LRO status (GET on the operation name returns 404; use fetchPredictOperation)."""
-    return (
-        f"https://{region}-aiplatform.googleapis.com/v1/projects/{project}"
-        f"/locations/{region}/publishers/google/models/{model_id}:fetchPredictOperation"
+def _parse_publisher_model_from_operation_name(
+    operation_name: str,
+) -> tuple[str, str, str] | None:
+    """Return (project_id, location, model_id) from a Veo LRO name returned by predictLongRunning."""
+    parts = operation_name.strip().strip("/").split("/")
+    try:
+        if (
+            len(parts) >= 10
+            and parts[0] == "projects"
+            and parts[2] == "locations"
+            and parts[4] == "publishers"
+            and parts[5] == "google"
+            and parts[6] == "models"
+            and parts[8] == "operations"
+        ):
+            return parts[1], parts[3], parts[7]
+    except IndexError:
+        pass
+    return None
+
+
+def _fetch_predict_endpoint_urls(project: str, location: str, model_id: str) -> tuple[str, ...]:
+    """Regional host first, then global aiplatform host (see Vertex GenAI REST)."""
+    path = (
+        f"/v1/projects/{project}/locations/{location}"
+        f"/publishers/google/models/{model_id}:fetchPredictOperation"
     )
+    regional = f"https://{location}-aiplatform.googleapis.com{path}"
+    global_host = f"https://aiplatform.googleapis.com{path}"
+    return (regional, global_host)
 
 
 def _veo_model(settings: Settings) -> str:
@@ -176,33 +200,55 @@ async def _await_veo_operation(
     log_label: str,
 ) -> Path:
     cred_path = _credentials_path(settings) or ""
-    poll_url = _fetch_predict_url(project, region, model_id)
+    parsed = _parse_publisher_model_from_operation_name(operation_name)
+    if parsed:
+        poll_project, poll_location, poll_model = parsed
+        logger.info(
+            "Veo LRO poll targets from operation name: project=%s location=%s model=%s",
+            poll_project,
+            poll_location,
+            poll_model,
+        )
+    else:
+        poll_project, poll_location, poll_model = project, region, model_id
+        logger.warning(
+            "Veo LRO name did not match expected pattern; using settings project/region/model for fetchPredictOperation"
+        )
+
+    poll_urls = _fetch_predict_endpoint_urls(poll_project, poll_location, poll_model)
+    gcs_project = poll_project if parsed else project
 
     for poll in range(MAX_POLL_ATTEMPTS):
         await asyncio.sleep(POLL_INTERVAL)
 
         token = await _get_token(settings)
-        poll_resp = await client.post(
-            poll_url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json; charset=utf-8",
-            },
-            json={"operationName": operation_name},
-        )
-
-        if poll_resp.status_code >= 400:
+        poll_resp: httpx.Response | None = None
+        for endpoint_url in poll_urls:
+            poll_resp = await client.post(
+                endpoint_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+                json={"operationName": operation_name},
+            )
+            if poll_resp.status_code < 400:
+                break
+            host = endpoint_url.split("//", 1)[-1].split("/", 1)[0]
             logger.warning(
-                "Veo fetchPredictOperation HTTP %s: %s",
+                "Veo fetchPredictOperation host=%s HTTP %s: %s",
+                host,
                 poll_resp.status_code,
                 poll_resp.text[:300],
             )
+
+        if poll_resp is None or poll_resp.status_code >= 400:
             continue
 
         try:
             poll_data = poll_resp.json()
         except Exception:
-            logger.warning("Veo poll non-JSON: %s", poll_resp.text[:200])
+            logger.warning("Veo fetchPredictOperation non-JSON: %s", poll_resp.text[:200])
             continue
 
         if not poll_data.get("done"):
@@ -220,7 +266,7 @@ async def _await_veo_operation(
         if gcs_uri and cred_path:
             logger.info("Veo %s: downloading %s", log_label, gcs_uri)
             video_bytes = await asyncio.to_thread(
-                _download_gcs_bytes, gcs_uri, cred_path, project
+                _download_gcs_bytes, gcs_uri, cred_path, gcs_project
             )
             out_path.write_bytes(video_bytes)
             logger.info(
