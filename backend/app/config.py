@@ -109,8 +109,9 @@ class Settings(BaseSettings):
         validation_alias="IMAGEN_ALLOW_STANDARD_GENERATE",
     )
 
-    # Vertex AI Imagen (GCP service account + project). When true, slide images use Vertex instead of GEMINI_API_KEY.
-    imagen_use_vertex: bool = Field(default=False, validation_alias="IMAGEN_USE_VERTEX")
+    # Vertex AI Imagen (GCP service account + project). When true, slide images use Vertex :predict instead of
+    # Generative Language API. Also implied when Vertex Gemini 2.5 image failover is configured (same SA/project).
+    imagen_use_vertex: bool = Field(default=True, validation_alias="IMAGEN_USE_VERTEX")
     vertex_imagen_project_id: str = Field(
         default="",
         validation_alias=AliasChoices("VERTEX_IMAGEN_PROJECT", "GOOGLE_CLOUD_PROJECT"),
@@ -296,11 +297,15 @@ class Settings(BaseSettings):
         return False
 
     def vertex_imagen_configured(self) -> bool:
-        if not self.imagen_use_vertex:
-            return False
+        """Vertex :predict when project+SA exist and (IMAGEN_USE_VERTEX or Vertex Gemini 2.5 image stack is on)."""
         if not (self.vertex_imagen_project_id or "").strip():
             return False
-        return self.vertex_gcp_service_account_file_available()
+        if not self.vertex_gcp_service_account_file_available():
+            return False
+        if self.imagen_use_vertex:
+            return True
+        # Gemini 3.1 image uses API key; 2.5 image + Imagen belong on Vertex with the same service account.
+        return self.vertex_gemini_image_configured()
 
     def imagen_model_effective(self) -> str:
         """Model id sent to Vertex / Generative Language predict (remaps legacy standard → fast)."""

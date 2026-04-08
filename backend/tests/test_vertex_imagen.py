@@ -1,6 +1,7 @@
 import httpx
 
 from app.config import Settings
+from app.services.google_imagen import build_imagen_predict_parameters
 from app.services.vertex_imagen import response_indicates_try_next_region
 
 
@@ -53,4 +54,41 @@ def test_vertex_imagen_requires_key_file_not_tts_adc_only(monkeypatch):
     monkeypatch.setenv("GOOGLE_TTS_CREDENTIALS_JSON", "/no/such/credentials.json")
     s = Settings()
     assert s.google_tts_is_configured()
+    assert s.vertex_imagen_configured() is False
+
+
+def test_vertex_imagen_auto_when_vertex_gemini_stack_configured(tmp_path, monkeypatch):
+    key_file = tmp_path / "sa.json"
+    key_file.write_text("{}")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(key_file))
+    monkeypatch.setenv("IMAGEN_USE_VERTEX", "false")
+    monkeypatch.setenv("VERTEX_IMAGEN_PROJECT", "test-project")
+    monkeypatch.setenv("VERTEX_GEMINI_IMAGE_FAILOVER", "true")
+    monkeypatch.setenv("VERTEX_GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+    monkeypatch.delenv("VERTEX_GEMINI_IMAGE_REGIONS", raising=False)
+    s = Settings()
+    assert s.vertex_gemini_image_configured() is True
+    assert s.vertex_imagen_configured() is True
+
+
+def test_build_imagen_predict_ai_studio_omits_sample_image_size(monkeypatch):
+    monkeypatch.delenv("IMAGEN_IMAGE_SIZE", raising=False)
+    s = Settings()
+    studio = build_imagen_predict_parameters(s, vertex=False)
+    assert "sampleImageSize" not in studio
+    assert studio.get("imageSize") == "1K"
+    vtx = build_imagen_predict_parameters(s, vertex=True)
+    assert vtx.get("sampleImageSize") == "1K"
+    assert vtx.get("imageSize") == "1K"
+
+
+def test_vertex_imagen_off_when_imagen_use_vertex_false_and_no_vertex_gemini(tmp_path, monkeypatch):
+    key_file = tmp_path / "sa.json"
+    key_file.write_text("{}")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(key_file))
+    monkeypatch.setenv("IMAGEN_USE_VERTEX", "false")
+    monkeypatch.setenv("VERTEX_IMAGEN_PROJECT", "test-project")
+    monkeypatch.setenv("VERTEX_GEMINI_IMAGE_FAILOVER", "false")
+    s = Settings()
+    assert s.vertex_gemini_image_configured() is False
     assert s.vertex_imagen_configured() is False

@@ -1,4 +1,4 @@
-"""Imagen slide images: Vertex AI (primary when IMAGEN_USE_VERTEX=1) or Google AI Studio (GEMINI_API_KEY)."""
+"""Imagen slide images: Vertex AI :predict (service account) when configured, else Google AI Studio (GEMINI_API_KEY)."""
 
 from __future__ import annotations
 
@@ -25,21 +25,21 @@ class GoogleImagenError(Exception):
 
 
 def build_imagen_predict_parameters(settings: Settings, *, vertex: bool = False) -> dict[str, Any]:
-    """Shared Imagen :predict parameters. Imagen 4 on Vertex expects sampleImageSize (imageSize alone can return no bytes)."""
+    """Imagen :predict parameters. Vertex expects sampleImageSize; AI Studio rejects it (use imageSize only)."""
     size = (settings.imagen_image_size or "1K").strip()
     params: dict[str, Any] = {
         "sampleCount": 1,
         "aspectRatio": (settings.imagen_aspect_ratio or "9:16").strip(),
         "personGeneration": (settings.imagen_person_generation or "allow_adult").strip(),
-        "sampleImageSize": size,
         "imageSize": size,
     }
+    if vertex:
+        params["sampleImageSize"] = size
+        params["language"] = "en"
+        params["includeRaiReason"] = True
     safety = (settings.imagen_safety_setting or "").strip()
     if safety:
         params["safetySetting"] = safety
-    if vertex:
-        params["language"] = "en"
-        params["includeRaiReason"] = True
     return params
 
 

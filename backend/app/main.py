@@ -902,8 +902,8 @@ async def _do_video_pipeline(
 
     if not settings.slide_visuals_configured():
         visual_detail = (
-            "No slide API configured. Add GEMINI_API_KEY for Nano Banana 2 (native) and/or Imagen, "
-            "enable Vertex Imagen (IMAGEN_USE_VERTEX), or set NANO_BANANA_API_KEY for the alternate provider."
+            "No slide API configured. Add GEMINI_API_KEY for Gemini 3.1 native image, set VERTEX_IMAGEN_PROJECT "
+            "and a service account for Vertex Imagen / Gemini 2.5 image, or set NANO_BANANA_API_KEY."
         )
 
     t0 = time.perf_counter()

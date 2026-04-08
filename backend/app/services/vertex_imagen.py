@@ -232,8 +232,9 @@ async def generate_vertex_imagen_slide_images(
 ) -> list[Path]:
     if not settings.vertex_imagen_configured():
         raise GoogleImagenError(
-            "Vertex Imagen is not configured (IMAGEN_USE_VERTEX=1, VERTEX_IMAGEN_PROJECT, "
-            "and GOOGLE_TTS_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS)"
+            "Vertex Imagen is not configured (VERTEX_IMAGEN_PROJECT / GOOGLE_CLOUD_PROJECT, "
+            "service account JSON via GOOGLE_TTS_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS, "
+            "and IMAGEN_USE_VERTEX or Vertex Gemini 2.5 image failover enabled)"
         )
 
     credentials_path = _credentials_path(settings)
