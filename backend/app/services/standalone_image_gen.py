@@ -1,7 +1,7 @@
 """Standalone image generation with failover.
 
 Portrait mode (reference image provided):
-  Tier 0:  OpenAI images.edit (OPENAI_IMAGE_EDIT_MODEL, default dall-e-2)
+  Tier 0:  OpenAI images.edit (dall-e-2 only; enforced in Settings)
   Tier 1+: Gemini / Vertex fallback
 
 Text-to-image mode (no reference image):

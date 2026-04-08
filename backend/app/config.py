@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5", validation_alias="OPENAI_MODEL")
     openai_timeout: float = Field(default=120.0, validation_alias="OPENAI_TIMEOUT")
-    # images.edit: many keys only allow dall-e-2; gpt-image-1 when your account supports it on this endpoint.
+    # images.edit is called with dall-e-2 only (OpenAI rejects gpt-image-1 on this endpoint for most API keys).
+    # OPENAI_IMAGE_EDIT_MODEL in .env is ignored if set to anything else; see field validator below.
     openai_image_edit_model: str = Field(
         default="dall-e-2",
         validation_alias="OPENAI_IMAGE_EDIT_MODEL",
@@ -415,6 +416,19 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return v.strip().lower() in ("1", "true", "yes", "on")
         return bool(v)
+
+    @field_validator("openai_image_edit_model", mode="after")
+    @classmethod
+    def openai_image_edit_model_force_dalle2(cls, v: str) -> str:
+        """images.edit portrait path: only dall-e-2 is reliable across OpenAI projects."""
+        s = (v or "").strip() or "dall-e-2"
+        if s.lower() != "dall-e-2":
+            logger.warning(
+                "OPENAI_IMAGE_EDIT_MODEL=%r is ignored; using dall-e-2 for images.edit (other models return 400 for many keys).",
+                s,
+            )
+            return "dall-e-2"
+        return s
 
     @model_validator(mode="after")
     def use_fast_imagen_unless_standard_explicitly_allowed(self):
