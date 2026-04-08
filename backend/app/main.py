@@ -1265,7 +1265,7 @@ async def api_generate_image(
     image: UploadFile | None = File(None),
     user_email: Annotated[str, Form()] = "",
 ):
-    """Standalone image generation using 3-tier model failover.
+    """Standalone image generation (Gemini native, then Vertex Gemini, then Vertex Imagen).
 
     When an *image* file is uploaded the model receives it as a reference photo
     for face-preserving portrait stylisation.
@@ -1278,6 +1278,13 @@ async def api_generate_image(
         raise HTTPException(status_code=422, detail="prompt is required")
 
     count = max(1, min(count, 4))
+    logger.info(
+        "generate-image: count=%s style=%s aspect=%s has_upload=%s",
+        count,
+        style,
+        aspect_ratio,
+        image is not None and bool(image.filename),
+    )
 
     reference_bytes: bytes | None = None
     if image is not None and image.filename:

@@ -32,6 +32,9 @@ from app.services.image_watermark import watermark_file
 
 logger = logging.getLogger(__name__)
 
+# One HTTP attempt on Gemini API then failover (video pipeline uses more retries on native).
+_STANDALONE_GEMINI_NATIVE_HTTP_ATTEMPTS = 1
+
 ASPECT_TO_IMAGEN = {
     "1:1": "1:1",
     "16:9": "16:9",
@@ -87,13 +90,22 @@ async def generate_standalone_image(
 
     timeout = max(30.0, settings.gemini_timeout)
 
-    # Tier 1: Gemini 3.1 Flash Preview (native)
+    logger.info(
+        "Standalone image: start portrait=%s tiers native=%s vertex_gemini=%s vertex_imagen=%s",
+        reference_image is not None,
+        patched.gemini_native_image_configured(),
+        patched.vertex_gemini_image_configured(),
+        patched.vertex_imagen_configured(),
+    )
+
+    # Tier 1: Gemini 3.1 Flash Preview (native) — few attempts so Vertex/Imagen can take over quickly on 503.
     if patched.gemini_native_image_configured():
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 await gemini_native_generate_one(
                     client, patched, prompt, out_path,
                     reference_png_bytes=reference_image,
+                    max_http_attempts=_STANDALONE_GEMINI_NATIVE_HTTP_ATTEMPTS,
                 )
             if out_path.is_file() and out_path.stat().st_size > 100:
                 watermark_file(out_path)
@@ -101,6 +113,10 @@ async def generate_standalone_image(
                 return ImageGenResult(out_path, w, h, "gemini-3.1-flash-preview")
         except (GeminiNativeImageError, Exception) as e:
             logger.warning("Standalone image: Gemini native failed: %s", e)
+    else:
+        logger.info(
+            "Standalone image: skip Gemini native (GEMINI_API_KEY missing, GEMINI_NATIVE_IMAGE_FIRST=false, or no model)"
+        )
 
     # Tier 2: Vertex Gemini 2.5 Flash
     if patched.vertex_gemini_image_configured():
@@ -123,6 +139,10 @@ async def generate_standalone_image(
                             return ImageGenResult(out_path, w, h, "gemini-2.5-flash")
             except (VertexGeminiImageError, Exception) as e:
                 logger.warning("Standalone image: Vertex Gemini failed: %s", e)
+    else:
+        logger.info(
+            "Standalone image: skip Vertex Gemini (not configured — need GCP SA JSON, VERTEX_IMAGEN_PROJECT, VERTEX_GEMINI_IMAGE_*)"
+        )
 
     # Tier 3: Vertex Imagen
     if patched.vertex_imagen_configured():
@@ -144,6 +164,10 @@ async def generate_standalone_image(
                     return ImageGenResult(out_path, w, h, "imagen-4.0")
             except (GoogleImagenError, Exception) as e:
                 logger.warning("Standalone image: Vertex Imagen failed: %s", e)
+    else:
+        logger.info(
+            "Standalone image: skip Vertex Imagen (not configured — IMAGEN_USE_VERTEX / project + SA, or Vertex Gemini stack)"
+        )
 
     raise RuntimeError(
         "All image generation tiers failed. Check API keys, service account, and quotas."

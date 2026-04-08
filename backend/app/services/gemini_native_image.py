@@ -93,6 +93,7 @@ async def _generate_one(
     out_path: Path,
     *,
     reference_png_bytes: bytes | None = None,
+    max_http_attempts: int = 3,
 ) -> None:
     key = (settings.gemini_api_key or "").strip()
     if not key:
@@ -133,7 +134,7 @@ async def _generate_one(
         },
     }
 
-    max_attempts = 3
+    max_attempts = max(1, min(max_http_attempts, 8))
     last_error: GeminiNativeImageError | None = None
 
     for attempt in range(max_attempts):
@@ -171,6 +172,12 @@ async def _generate_one(
 
         if resp.status_code >= 400:
             logger.warning("Gemini native image HTTP %s: %s", resp.status_code, resp.text[:800])
+            if resp.status_code in (429, 500, 503) and attempt >= max_attempts - 1:
+                logger.info(
+                    "Gemini native image gave up after %s attempt(s) on HTTP %s; caller may failover to Vertex/Imagen.",
+                    max_attempts,
+                    resp.status_code,
+                )
             raise GeminiNativeImageError(
                 f"Gemini native image error {resp.status_code}: {_http_error_message(resp)}"
             )
