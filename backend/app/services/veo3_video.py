@@ -37,8 +37,12 @@ def _predict_url(project: str, region: str, model_id: str) -> str:
     )
 
 
-def _operation_url(region: str, operation_name: str) -> str:
-    return f"https://{region}-aiplatform.googleapis.com/v1/{operation_name}"
+def _fetch_predict_url(project: str, region: str, model_id: str) -> str:
+    """Poll Veo LRO status (GET on the operation name returns 404; use fetchPredictOperation)."""
+    return (
+        f"https://{region}-aiplatform.googleapis.com/v1/projects/{project}"
+        f"/locations/{region}/publishers/google/models/{model_id}:fetchPredictOperation"
+    )
 
 
 def _veo_model(settings: Settings) -> str:
@@ -166,29 +170,40 @@ async def _await_veo_operation(
     settings: Settings,
     region: str,
     project: str,
+    model_id: str,
     operation_name: str,
     out_path: Path,
     log_label: str,
 ) -> Path:
     cred_path = _credentials_path(settings) or ""
+    poll_url = _fetch_predict_url(project, region, model_id)
 
     for poll in range(MAX_POLL_ATTEMPTS):
         await asyncio.sleep(POLL_INTERVAL)
 
         token = await _get_token(settings)
-        poll_url = _operation_url(region, operation_name)
-        poll_resp = await client.get(
+        poll_resp = await client.post(
             poll_url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json={"operationName": operation_name},
         )
 
         if poll_resp.status_code >= 400:
             logger.warning(
-                "Veo poll HTTP %s: %s", poll_resp.status_code, poll_resp.text[:300]
+                "Veo fetchPredictOperation HTTP %s: %s",
+                poll_resp.status_code,
+                poll_resp.text[:300],
             )
             continue
 
-        poll_data = poll_resp.json()
+        try:
+            poll_data = poll_resp.json()
+        except Exception:
+            logger.warning("Veo poll non-JSON: %s", poll_resp.text[:200])
+            continue
 
         if not poll_data.get("done"):
             continue
@@ -320,6 +335,7 @@ async def generate_video_from_image(
             settings=settings,
             region=region,
             project=project,
+            model_id=model_id,
             operation_name=operation_name,
             out_path=out_path,
             log_label="image-to-video",
@@ -392,6 +408,7 @@ async def generate_video_from_prompt(
             settings=settings,
             region=region,
             project=project,
+            model_id=model_id,
             operation_name=operation_name,
             out_path=out_path,
             log_label="text-to-video",
