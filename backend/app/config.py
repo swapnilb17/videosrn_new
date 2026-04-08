@@ -6,11 +6,22 @@ from urllib.parse import urlparse
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# .env must load from the project root, not the process cwd (uvicorn may start elsewhere).
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_ENV_FILE = _PROJECT_ROOT / ".env"
-# Same path pydantic-settings reads; useful for startup diagnostics.
+# Load dotenv from repo root first, then backend/ (later files override). Cwd-independent.
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_REPO_ROOT = _BACKEND_DIR.parent
+
+
+def _env_file_tuple() -> tuple[Path, ...] | None:
+    ordered = [_REPO_ROOT / ".env", _BACKEND_DIR / ".env"]
+    found = [p for p in ordered if p.is_file()]
+    return tuple(found) if found else None
+
+
+_ENV_FILE = _BACKEND_DIR / ".env"
+# Primary backend .env path for startup diagnostics / docs.
 SETTINGS_DOTENV_PATH = _ENV_FILE
+# Historically "project root" meant the backend package root (where data/ and .env live).
+_PROJECT_ROOT = _BACKEND_DIR
 
 logger = logging.getLogger(__name__)
 _IMAGEN_STANDARD_REMAP_LOGGED = False
@@ -36,7 +47,7 @@ def normalize_s3_bucket_name(raw: str | None) -> str:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=_ENV_FILE,
+        env_file=_env_file_tuple(),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -126,9 +137,9 @@ class Settings(BaseSettings):
         default="veo-3.0-generate-001",
         validation_alias=AliasChoices("VERTEX_VEO_MODEL", "VEO_VERTEX_MODEL"),
     )
-    # Required for predictLongRunning output — e.g. gs://your-bucket/veo-output/ (writes under this prefix).
+    # GCS prefix for Vertex Veo predictLongRunning output. Override in env for other projects.
     vertex_veo_storage_uri: str = Field(
-        default="",
+        default="gs://veo_enablyai/",
         validation_alias=AliasChoices("VERTEX_VEO_STORAGE_URI", "VEO_STORAGE_URI"),
     )
 
