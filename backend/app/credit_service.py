@@ -67,6 +67,34 @@ async def get_user_by_sub(session: AsyncSession, sub: str) -> User | None:
     return r.scalar_one_or_none()
 
 
+async def _has_signup_grant_ledger(session: AsyncSession, user_id: uuid.UUID) -> bool:
+    r = await session.execute(
+        select(CreditLedger.id).where(
+            CreditLedger.user_id == user_id,
+            CreditLedger.reason == "signup_grant",
+        ).limit(1)
+    )
+    return r.scalar_one_or_none() is not None
+
+
+async def ensure_signup_grant_integrity(session: AsyncSession, user: User) -> None:
+    """Apply one-time signup credits if there is no signup_grant ledger row.
+
+    Repairs inconsistent rows where ``signup_grant_completed`` was set without a ledger
+    (e.g. failed transaction or manual DB edits), which otherwise show balance 0 forever.
+    """
+    if await _has_signup_grant_ledger(session, user.id):
+        return
+    if user.signup_grant_completed:
+        logger.warning(
+            "Repairing signup grant: user %s has signup_grant_completed without ledger; adding %s credits",
+            user.email,
+            SIGNUP_CREDITS,
+        )
+        user.signup_grant_completed = False
+    await apply_signup_grant(session, user)
+
+
 async def get_or_create_user(
     session: AsyncSession,
     *,
@@ -93,16 +121,10 @@ async def get_or_create_user(
         )
         session.add(user)
         await session.flush()
-        await apply_signup_grant(session, user)
-        await session.refresh(user)
-        return user
-
-    if google_sub and not user.google_sub:
+    elif google_sub and not user.google_sub:
         user.google_sub = google_sub.strip()
 
-    if not user.signup_grant_completed:
-        await apply_signup_grant(session, user)
-
+    await ensure_signup_grant_integrity(session, user)
     await session.flush()
     return user
 
@@ -110,7 +132,6 @@ async def get_or_create_user(
 async def apply_signup_grant(session: AsyncSession, user: User) -> None:
     if user.signup_grant_completed:
         return
-    user.signup_grant_completed = True
     await add_credits(
         session,
         user,
@@ -118,6 +139,7 @@ async def apply_signup_grant(session: AsyncSession, user: User) -> None:
         reason="signup_grant",
         meta={"source": "signup"},
     )
+    user.signup_grant_completed = True
 
 
 async def add_credits(

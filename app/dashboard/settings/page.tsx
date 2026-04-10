@@ -59,6 +59,14 @@ export default function SettingsPage() {
             Plan: <span className="font-semibold">{planLabel}</span>
           </span>
         </div>
+        {creditsInfo?.creditsEnabled === false ? (
+          <p className="text-sm text-amber-200/90">
+            Credits are not active on this server (backend needs{" "}
+            <code className="rounded bg-white/10 px-1">DATABASE_URL</code> and{" "}
+            <code className="rounded bg-white/10 px-1">CREDITS_ENABLED</code>
+            ). Balance will stay at 0 until that is fixed.
+          </p>
+        ) : null}
       </Card>
 
       <Card className="space-y-3 p-4">
