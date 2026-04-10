@@ -92,6 +92,46 @@ async def _has_signup_grant_ledger(session: AsyncSession, user_id: uuid.UUID) ->
     return r.scalar_one_or_none() is not None
 
 
+async def _has_starter_redeem_grant_ledger(session: AsyncSession, user_id: uuid.UUID) -> bool:
+    r = await session.execute(
+        select(CreditLedger.id).where(
+            CreditLedger.user_id == user_id,
+            CreditLedger.reason == "starter_redeem_grant",
+        ).limit(1)
+    )
+    return r.scalar_one_or_none() is not None
+
+
+async def ensure_starter_legacy_topup(session: AsyncSession, user: User) -> None:
+    """Top up to STARTER_CREDITS_TARGET if Starter was redeemed before grant ledger existed.
+
+    New redeems record ``starter_redeem_grant`` in the ledger. Older accounts have
+    ``starter_redeem_completed`` but no such row and never received the 500 top-up.
+    If a ``starter_redeem_grant`` row exists, we assume the quota was already applied
+    (user may have spent down — do not top up again).
+    """
+    if user.plan != PLAN_STARTER or not user.starter_redeem_completed:
+        return
+    if await _has_starter_redeem_grant_ledger(session, user.id):
+        return
+    need = max(0, STARTER_CREDITS_TARGET - int(user.credit_balance))
+    if need <= 0:
+        return
+    logger.info(
+        "Starter legacy top-up for %s: +%s credits (toward %s, no prior starter_redeem_grant)",
+        user.email,
+        need,
+        STARTER_CREDITS_TARGET,
+    )
+    await add_credits(
+        session,
+        user,
+        need,
+        reason="starter_redeem_grant",
+        meta={"legacy_backfill": True, "target_balance": STARTER_CREDITS_TARGET},
+    )
+
+
 async def ensure_signup_grant_integrity(session: AsyncSession, user: User) -> None:
     """Apply one-time signup credits if there is no signup_grant ledger row.
 
@@ -140,6 +180,7 @@ async def get_or_create_user(
         user.google_sub = google_sub.strip()
 
     await ensure_signup_grant_integrity(session, user)
+    await ensure_starter_legacy_topup(session, user)
     await session.flush()
     return user
 
