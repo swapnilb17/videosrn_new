@@ -58,9 +58,9 @@ export const pricingTiers: PricingTier[] = [
   {
     name: "Starter",
     price: "Redeem in Settings",
-    credits: "Premium Veo + your credits",
+    credits: "Up to 500 credits on redeem",
     description:
-      "Unlock premium Veo (image/video) with a redeem code. Usage bills credits per second of premium output.",
+      "Unlock premium Veo (image/video) with a redeem code; balance is topped up to 500 credits if below. Premium usage still bills per second.",
     featured: true,
     badge: "Unlock premium",
   },

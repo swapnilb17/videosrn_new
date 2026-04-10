@@ -18,7 +18,9 @@ export default function SettingsPage() {
     setRedeeming(true);
     try {
       await redeemStarterCode(code.trim());
-      setRedeemMsg("Starter unlocked. You can use Veo (premium) until credits run out.");
+      setRedeemMsg(
+        "Starter unlocked — balance topped up to 500 credits (if below). Veo (premium) available while you have credits.",
+      );
       setCode("");
       refreshCredits();
     } catch (err: unknown) {
@@ -44,10 +46,13 @@ export default function SettingsPage() {
       <Card className="space-y-3 p-4">
         <p className="text-lg font-semibold">Credits &amp; plan</p>
         <p className="text-sm text-slate-300">
-          1 credit equals ₹1. New accounts receive 50 credits once. Standard
-          video uses 5 credits per second of target duration; images cost 5
-          credits each; voice uses 2 credits per 2,000 characters. Veo
-          (premium) requires Starter and bills 15–25 credits per second by tier.
+          1 credit equals ₹1. New accounts receive 50 credits once. Redeeming
+          Starter tops you up to 500 credits if your balance is below that.
+          Standard video (Topic → Video) bills about 0.75 credits per second of
+          target duration (rounded up), or 1.75/sec when Enhance mode is on.
+          Images cost 5 credits each; voice uses 2 credits per 2,000 characters.
+          Veo (premium) requires Starter and bills 15–25 credits per second by
+          tier.
         </p>
         {creditsError ? (
           <p className="text-sm text-red-300/90">

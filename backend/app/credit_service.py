@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 # --- Pricing (1 credit = 1 INR) ---
 SIGNUP_CREDITS = 50
-STANDARD_VIDEO_CREDITS_PER_SECOND = 5
+# Standard (Topic → Video): per target second, rounded up to whole credits
+STANDARD_VIDEO_CREDITS_PER_SECOND = 0.75
+STANDARD_VIDEO_ENHANCE_CREDITS_PER_SECOND = 1.75
+# Starter redeem tops balance up to this (Free signup stays SIGNUP_CREDITS once)
+STARTER_CREDITS_TARGET = 500
 IMAGE_CREDITS_PER_IMAGE = 5
 TTS_CREDITS_PER_2K_CHARS = 2
 VEO_LITE_CREDITS_PER_SECOND_720 = 15
@@ -38,6 +42,17 @@ def tts_credits_for_chars(char_count: int) -> int:
         return 0
     blocks = max(1, math.ceil(char_count / 2000))
     return blocks * TTS_CREDITS_PER_2K_CHARS
+
+
+def standard_video_credit_cost(target_seconds: int, *, enhance_motion: bool) -> int:
+    """Credits for /generate standard pipeline: ceil(duration × rate), minimum 1."""
+    ts = max(1, int(target_seconds))
+    rate = (
+        STANDARD_VIDEO_ENHANCE_CREDITS_PER_SECOND
+        if enhance_motion
+        else STANDARD_VIDEO_CREDITS_PER_SECOND
+    )
+    return max(1, math.ceil(ts * rate))
 
 
 def veo_credits_for_seconds(duration_seconds: int, *, is_1080p: bool) -> int:
@@ -226,6 +241,15 @@ async def redeem_starter_code(
         raise ValueError("Starter code already redeemed on this account")
     user.starter_redeem_completed = True
     user.plan = PLAN_STARTER
+    need = max(0, STARTER_CREDITS_TARGET - int(user.credit_balance))
+    if need > 0:
+        await add_credits(
+            session,
+            user,
+            need,
+            reason="starter_redeem_grant",
+            meta={"target_balance": STARTER_CREDITS_TARGET},
+        )
     await session.flush()
 
 

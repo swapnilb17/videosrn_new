@@ -35,12 +35,12 @@ from app.credit_holds import register_credit_hold, release_credit_hold
 from app.credit_service import (
     IMAGE_CREDITS_PER_IMAGE,
     InsufficientCreditsError,
-    STANDARD_VIDEO_CREDITS_PER_SECOND,
     add_credits,
     can_use_premium_models,
     deduct_credits,
     get_or_create_user,
     redeem_starter_code,
+    standard_video_credit_cost,
     tts_credits_for_chars,
     veo_credits_for_seconds,
 )
@@ -688,7 +688,7 @@ async def generate(
     )
 
     persist = settings.persistence_enabled() and session is not None
-    credit_cost = target_sec * STANDARD_VIDEO_CREDITS_PER_SECOND
+    credit_cost = standard_video_credit_cost(target_sec, enhance_motion=enhance_kb)
     if settings.credits_billing_enabled() and session is not None:
         cu = await resolve_user_for_credits(
             session,
@@ -711,7 +711,11 @@ async def generate(
                 locked,
                 credit_cost,
                 reason="standard_video",
-                meta={"target_sec": target_sec, "job_id": job_id},
+                meta={
+                    "target_sec": target_sec,
+                    "job_id": job_id,
+                    "enhance_motion": enhance_kb,
+                },
             )
         except InsufficientCreditsError as e:
             shutil.rmtree(job_dir, ignore_errors=True)

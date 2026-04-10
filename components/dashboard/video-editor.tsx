@@ -382,7 +382,8 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
             />
           </label>
           <p className="text-xs text-slate-500 -mt-2 pl-1">
-            Ken Burns zoom + two-voice conversational narration
+            Ken Burns zoom + two-voice conversational narration. Billing uses ~1.75
+            credits/sec of target duration (rounded up); standard mode ~0.75/sec.
           </p>
 
           {/* Generate button */}
