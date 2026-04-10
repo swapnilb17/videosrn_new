@@ -255,33 +255,33 @@ export default function Home() {
         <motion.section {...fadeInUp} className="space-y-6">
           <h2 className="text-center text-2xl font-semibold md:text-3xl">Pricing</h2>
           <p className="text-center text-sm text-slate-300">
-            Credits are consumed based on render quality and duration.
+            Credits are consumed based on feature, quality, and duration. Sign in to see your live balance.
           </p>
           <div className="grid items-stretch gap-5 md:grid-cols-3">
             {pricingTiers.map((tier) => (
               <motion.div
                 key={tier.name}
                 whileHover={{ y: -8 }}
-                className={tier.name === "Pro" ? "relative scale-[1.02]" : ""}
+                className={tier.featured ? "relative scale-[1.02]" : ""}
               >
-                {tier.name === "Pro" ? (
+                {tier.featured ? (
                   <div className="pointer-events-none absolute inset-[-10px] -z-10 rounded-3xl bg-gradient-to-r from-purple-500/35 to-blue-500/35 blur-xl" />
                 ) : null}
                 <Card
                   className={[
                     "glass h-full transition",
-                    tier.name === "Pro"
+                    tier.featured
                       ? "pro-spotlight border-purple-300/55 shadow-[0_22px_55px_rgba(112,92,255,0.35)]"
                       : "hover:border-purple-300/40 hover:shadow-[0_20px_45px_rgba(76,58,164,0.35)]",
                   ].join(" ")}
                 >
-                  {tier.name === "Pro" ? (
+                  {tier.badge ? (
                     <span className="mb-3 inline-flex rounded-full border border-purple-300/40 bg-purple-300/15 px-3 py-1 text-xs font-medium text-purple-100">
-                      Most Popular
+                      {tier.badge}
                     </span>
                   ) : null}
                   <p className="text-lg font-semibold">{tier.name}</p>
-                  <p className="mt-3 text-3xl font-bold">{tier.price}</p>
+                  <p className="mt-3 text-2xl font-bold md:text-3xl">{tier.price}</p>
                   <p className="mt-2 text-sm text-orange-200">{tier.credits}</p>
                   <p className="mt-4 text-sm leading-relaxed text-slate-300">{tier.description}</p>
                 </Card>

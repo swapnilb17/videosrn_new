@@ -36,24 +36,39 @@ export const projects: Project[] = [
   },
 ];
 
-export const pricingTiers = [
+/** Public marketing copy — aligns with in-app Free vs Starter (redeem) billing. */
+export type PricingTier = {
+  name: string;
+  price: string;
+  credits: string;
+  description: string;
+  /** Gradient + “hero” card styling */
+  featured?: boolean;
+  badge?: string;
+};
+
+export const pricingTiers: PricingTier[] = [
+  {
+    name: "Free",
+    price: "$0",
+    credits: "50 credits on signup",
+    description:
+      "Core generation: images, voice, and standard video. Each action debits credits from your balance.",
+  },
   {
     name: "Starter",
-    price: "$19/mo",
-    credits: "120 credits",
-    description: "Best for testing short social clips.",
+    price: "Redeem in Settings",
+    credits: "Premium Veo + your credits",
+    description:
+      "Unlock premium Veo (image/video) with a redeem code. Usage bills credits per second of premium output.",
+    featured: true,
+    badge: "Unlock premium",
   },
   {
-    name: "Pro",
-    price: "$49/mo",
-    credits: "500 credits",
-    description: "Great for weekly campaign production.",
-  },
-  {
-    name: "Scale",
-    price: "$99/mo",
-    credits: "1200 credits",
-    description: "For teams shipping videos every day.",
+    name: "Teams",
+    price: "Contact us",
+    credits: "Custom volume",
+    description: "Higher limits, shared workspaces, and invoicing for agencies. Reach out when you’re ready to scale.",
   },
 ];
 
