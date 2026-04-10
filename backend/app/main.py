@@ -441,9 +441,10 @@ async def internal_credits_me(
     sub = (request.headers.get("x-user-sub") or "").strip() or None
     u = await get_or_create_user(session, email=email, google_sub=sub)
     await session.commit()
+    await session.refresh(u)
     return {
         "credits_enabled": True,
-        "balance": u.credit_balance,
+        "balance": int(u.credit_balance),
         "plan": u.plan,
         "starter_redeem_available": not u.starter_redeem_completed,
     }

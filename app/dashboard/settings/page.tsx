@@ -7,7 +7,7 @@ import { useAuth } from "@/lib/auth-context";
 import { ApiError, redeemStarterCode } from "@/lib/api";
 
 export default function SettingsPage() {
-  const { credits, creditsInfo, refreshCredits } = useAuth();
+  const { credits, creditsInfo, creditsLoading, creditsError, refreshCredits } = useAuth();
   const [code, setCode] = useState("");
   const [redeemMsg, setRedeemMsg] = useState<string | null>(null);
   const [redeeming, setRedeeming] = useState(false);
@@ -49,17 +49,35 @@ export default function SettingsPage() {
           credits each; voice uses 2 credits per 2,000 characters. Veo
           (premium) requires Starter and bills 15–25 credits per second by tier.
         </p>
-        <div className="flex flex-wrap gap-4 text-sm">
-          <span>
-            Balance:{" "}
-            <span className="font-semibold text-orange-200">{credits}</span>{" "}
-            credits
-          </span>
-          <span>
-            Plan: <span className="font-semibold">{planLabel}</span>
-          </span>
-        </div>
-        {creditsInfo?.creditsEnabled === false ? (
+        {creditsError ? (
+          <p className="text-sm text-red-300/90">
+            Could not load credits: {creditsError}. Check that the backend is running
+            and the frontend can reach it (e.g.{" "}
+            <code className="rounded bg-white/10 px-1">INTERNAL_BACKEND_URL</code> in
+            Docker).{" "}
+            <button
+              type="button"
+              className="text-purple-300 underline hover:text-purple-200"
+              onClick={() => refreshCredits()}
+            >
+              Retry
+            </button>
+          </p>
+        ) : creditsLoading ? (
+          <p className="text-sm text-slate-400">Loading credits…</p>
+        ) : (
+          <div className="flex flex-wrap gap-4 text-sm">
+            <span>
+              Balance:{" "}
+              <span className="font-semibold text-orange-200">{credits}</span>{" "}
+              credits
+            </span>
+            <span>
+              Plan: <span className="font-semibold">{planLabel}</span>
+            </span>
+          </div>
+        )}
+        {!creditsError && !creditsLoading && creditsInfo?.creditsEnabled === false ? (
           <p className="text-sm text-amber-200/90">
             Credits are not active on this server (backend needs{" "}
             <code className="rounded bg-white/10 px-1">DATABASE_URL</code> and{" "}
