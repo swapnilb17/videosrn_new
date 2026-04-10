@@ -13,7 +13,10 @@ WORKDIR /opt/backend
 COPY backend/ .
 
 # Install Python deps (base only — no Coqui TTS)
-RUN pip install --no-cache-dir -e .
+# Upgrade pip/setuptools first: slim images ship older pip; PEP 517 + setuptools>=75 in pyproject.toml
+# often fails without a current setuptools. Non-editable install is fine (code is baked into the image).
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir .
 
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV PYTHONUNBUFFERED=1
