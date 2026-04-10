@@ -12,6 +12,7 @@ import {
   Loader2,
   Monitor,
   Clapperboard,
+  Gauge,
 } from "lucide-react";
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,12 @@ const ASPECTS = [
   { value: "1:1", label: "1:1" },
 ] as const;
 
+/** Backend video_tier + Vertex resolution (Veo 3.1 Lite). */
+const VIDEO_TIERS = [
+  { value: "720", label: "Veo 3.1 Lite (720p)" },
+  { value: "1080", label: "Veo 3.1 Lite (1080p)" },
+] as const;
+
 const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
 
@@ -54,6 +61,7 @@ export function PhotoToVideo() {
   const [duration, setDuration] = useState(8);
   const [camera, setCamera] = useState("zoom_in");
   const [aspect, setAspect] = useState("16:9");
+  const [videoTier, setVideoTier] = useState<(typeof VIDEO_TIERS)[number]["value"]>("1080");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PhotoToVideoResponse | null>(null);
@@ -75,7 +83,7 @@ export function PhotoToVideo() {
     fd.append("duration", String(duration));
     fd.append("camera_movement", camera);
     fd.append("aspect_ratio", aspect);
-    fd.append("video_tier", "1080");
+    fd.append("video_tier", videoTier);
     appendCreditIdentity(fd, userEmail, userId);
 
     try {
@@ -204,6 +212,26 @@ export function PhotoToVideo() {
             </select>
           </div>
 
+          {/* Output resolution (Veo 3.1 Lite) */}
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-1.5 text-sm text-slate-300">
+              <Gauge className="h-4 w-4" /> Quality
+            </label>
+            <select
+              className={INPUT_CLS}
+              value={videoTier}
+              onChange={(e) =>
+                setVideoTier(e.target.value as (typeof VIDEO_TIERS)[number]["value"])
+              }
+            >
+              {VIDEO_TIERS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Generate button */}
           <ClayButton
             className="w-full"
@@ -224,7 +252,7 @@ export function PhotoToVideo() {
           </ClayButton>
 
           <p className="text-xs text-slate-500">
-            Powered by Google Veo3
+            Powered by Google Veo 3.1 Lite on Vertex AI
           </p>
         </Card>
 
@@ -249,7 +277,7 @@ export function PhotoToVideo() {
           {generating && (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-gradient-to-br from-blue-500/10 via-cyan-500/5 to-purple-400/5 p-12 text-center min-h-[300px]">
               <Loader2 className="h-12 w-12 text-blue-400 animate-spin mb-4" />
-              <p className="text-slate-300 font-medium">Creating your video with Veo3...</p>
+              <p className="text-slate-300 font-medium">Creating your video with Veo 3.1 Lite...</p>
               <p className="text-slate-500 text-xs mt-1">
                 This may take 1-3 minutes.
               </p>

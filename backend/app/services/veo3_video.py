@@ -71,7 +71,12 @@ def _fetch_predict_endpoint_urls(project: str, location: str, model_id: str) -> 
 
 def _veo_model(settings: Settings) -> str:
     m = (settings.vertex_veo_model or "").strip()
-    return m or "veo-3.0-generate-001"
+    return m or "veo-3.1-lite-generate-001"
+
+
+def _veo_resolution(*, is_1080p: bool) -> str:
+    """Vertex VideoGenerationModelParams.resolution: 720p | 1080p."""
+    return "1080p" if is_1080p else "720p"
 
 
 def _veo_person_generation(settings: Settings) -> str:
@@ -318,6 +323,7 @@ async def generate_video_from_image(
     *,
     duration_seconds: int = 8,
     aspect_ratio: str = "16:9",
+    is_1080p: bool = True,
 ) -> Path:
     """Generate a video from an image + prompt using Veo on Vertex AI."""
     project = (settings.vertex_imagen_project_id or "").strip()
@@ -350,6 +356,7 @@ async def generate_video_from_image(
         ],
         "parameters": {
             "aspectRatio": aspect_ratio,
+            "resolution": _veo_resolution(is_1080p=is_1080p),
             "sampleCount": 1,
             "durationSeconds": duration,
             "storageUri": storage_uri,
@@ -403,6 +410,7 @@ async def generate_video_from_prompt(
     *,
     duration_seconds: int = 8,
     aspect_ratio: str = "16:9",
+    is_1080p: bool = True,
 ) -> Path:
     """Generate a video from text prompt only (no source image) using Veo."""
     project = (settings.vertex_imagen_project_id or "").strip()
@@ -425,6 +433,7 @@ async def generate_video_from_prompt(
         "instances": [{"prompt": prompt}],
         "parameters": {
             "aspectRatio": aspect_ratio,
+            "resolution": _veo_resolution(is_1080p=is_1080p),
             "sampleCount": 1,
             "durationSeconds": duration,
             "storageUri": storage_uri,

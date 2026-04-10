@@ -116,6 +116,19 @@ def _rate_limit_key(request: Request) -> str:
     return "unknown"
 
 
+def _veo_preview_dimensions(aspect_ratio: str, *, is_1080p: bool) -> tuple[int, int]:
+    """Approximate output size for API responses (matches Veo 720p/1080p tiers)."""
+    ar = (aspect_ratio or "16:9").strip()
+    if ar == "16:9":
+        return (1920, 1080) if is_1080p else (1280, 720)
+    if ar == "9:16":
+        return (1080, 1920) if is_1080p else (720, 1280)
+    return (1080, 1080) if is_1080p else (720, 720)
+
+
+VEO_MODEL_FALLBACK = "veo-3.1-lite-generate-001"
+
+
 _limiter_bootstrap = get_settings()
 limiter = Limiter(key_func=_rate_limit_key)
 
@@ -1549,7 +1562,7 @@ async def api_photo_to_video(
     user_sub: Annotated[str, Form()] = "",
     video_tier: Annotated[str, Form()] = "1080",
 ):
-    """Generate video from a photo using Google Veo3."""
+    """Generate video from a photo using Vertex Veo (default: 3.1 Lite)."""
     from app.services.veo3_video import (
         _veo_duration_seconds,
         generate_video_from_image,
@@ -1624,6 +1637,7 @@ async def api_photo_to_video(
             prompt,
             duration_seconds=duration,
             aspect_ratio=aspect_ratio,
+            is_1080p=is_1080,
         )
     except Veo3Error as e:
         if charged_user is not None and session is not None:
@@ -1661,7 +1675,8 @@ async def api_photo_to_video(
 
     job_dir_name = video_path.parent.name
     video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
-    veo_model = (settings.vertex_veo_model or "").strip() or "veo-3.0-generate-001"
+    veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
+    pw, ph = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
 
     ue = (user_email or "").strip()
     if ue and session is not None:
@@ -1673,7 +1688,12 @@ async def api_photo_to_video(
                 title=(motion_prompt or "Photo to video")[:200],
                 media_url=video_url,
                 source_service="photo-to-video",
-                extra={"duration": duration, "camera": camera_movement, "model": veo_model},
+                extra={
+                    "duration": duration,
+                    "camera": camera_movement,
+                    "model": veo_model,
+                    "resolution": "1080p" if is_1080 else "720p",
+                },
             )
         except Exception:
             logger.warning("photo-to-video media_insert failed (non-fatal)", exc_info=True)
@@ -1682,8 +1702,8 @@ async def api_photo_to_video(
         "job_id": job_dir_name,
         "video_url": video_url,
         "duration_seconds": duration,
-        "width": 1920 if aspect_ratio == "16:9" else (1080 if aspect_ratio == "9:16" else 1080),
-        "height": 1080 if aspect_ratio == "16:9" else (1920 if aspect_ratio == "9:16" else 1080),
+        "width": pw,
+        "height": ph,
         "model": veo_model,
     }
 
@@ -1703,7 +1723,7 @@ async def api_image_to_ad(
     user_sub: Annotated[str, Form()] = "",
     video_tier: Annotated[str, Form()] = "1080",
 ):
-    """Generate an ad video from a product image using Google Veo3."""
+    """Generate an ad video from a product image using Vertex Veo (default: 3.1 Lite)."""
     from app.services.veo3_video import (
         _veo_duration_seconds,
         generate_video_from_image,
@@ -1778,6 +1798,7 @@ async def api_image_to_ad(
             prompt,
             duration_seconds=dur_req,
             aspect_ratio=aspect_ratio,
+            is_1080p=is_1080,
         )
     except Veo3Error as e:
         if charged_user is not None and session is not None:
@@ -1815,7 +1836,8 @@ async def api_image_to_ad(
 
     job_dir_name = video_path.parent.name
     ad_video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
-    veo_model = (settings.vertex_veo_model or "").strip() or "veo-3.0-generate-001"
+    veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
+    aw, ah = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
 
     ue = (user_email or "").strip()
     if ue and session is not None:
@@ -1827,7 +1849,12 @@ async def api_image_to_ad(
                 title=(ad_copy or "Image to Ad video")[:200],
                 media_url=ad_video_url,
                 source_service="image-to-ad",
-                extra={"template": template, "duration": duration, "model": veo_model},
+                extra={
+                    "template": template,
+                    "duration": duration,
+                    "model": veo_model,
+                    "resolution": "1080p" if is_1080 else "720p",
+                },
             )
         except Exception:
             logger.warning("image-to-ad media_insert failed (non-fatal)", exc_info=True)
@@ -1836,8 +1863,8 @@ async def api_image_to_ad(
         "job_id": job_dir_name,
         "video_url": ad_video_url,
         "duration_seconds": duration,
-        "width": 1920 if aspect_ratio == "16:9" else (1080 if aspect_ratio == "9:16" else 1080),
-        "height": 1080 if aspect_ratio == "16:9" else (1920 if aspect_ratio == "9:16" else 1080),
+        "width": aw,
+        "height": ah,
         "model": veo_model,
     }
 

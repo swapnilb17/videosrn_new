@@ -132,9 +132,9 @@ class Settings(BaseSettings):
         validation_alias="VERTEX_IMAGEN_REGIONS",
     )
 
-    # Vertex Veo video (same SA + project as Imagen). GA models: veo-3.0-generate-001, veo-3.1-generate-001, etc.
+    # Vertex Veo video (same SA + project as Imagen). Default: Veo 3.1 Lite (720p/1080p via API resolution).
     vertex_veo_model: str = Field(
-        default="veo-3.0-generate-001",
+        default="veo-3.1-lite-generate-001",
         validation_alias=AliasChoices("VERTEX_VEO_MODEL", "VEO_VERTEX_MODEL"),
     )
     # GCS prefix for Vertex Veo predictLongRunning output. Override in env for other projects.

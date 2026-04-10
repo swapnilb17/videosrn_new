@@ -14,6 +14,7 @@ import {
   Download,
   Loader2,
   LayoutTemplate,
+  Gauge,
 } from "lucide-react";
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
@@ -46,6 +47,11 @@ const ASPECTS = [
   { value: "1:1", label: "1:1" },
 ] as const;
 
+const VIDEO_TIERS = [
+  { value: "720", label: "Veo 3.1 Lite (720p)" },
+  { value: "1080", label: "Veo 3.1 Lite (1080p)" },
+] as const;
+
 const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
 
@@ -62,6 +68,7 @@ export function ImageToAdVideo() {
   const [duration, setDuration] = useState(30);
   const [aspect, setAspect] = useState("9:16");
   const [brandColor, setBrandColor] = useState("#8b5cf6");
+  const [videoTier, setVideoTier] = useState<(typeof VIDEO_TIERS)[number]["value"]>("1080");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImageToAdResponse | null>(null);
@@ -86,7 +93,7 @@ export function ImageToAdVideo() {
     fd.append("aspect_ratio", aspect);
     fd.append("brand_color", brandColor);
     if (logoFile) fd.append("logo", logoFile);
-    fd.append("video_tier", "1080");
+    fd.append("video_tier", videoTier);
     appendCreditIdentity(fd, userEmail, userId);
 
     try {
@@ -230,6 +237,26 @@ export function ImageToAdVideo() {
             </select>
           </div>
 
+          {/* Output resolution (Veo 3.1 Lite) */}
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-1.5 text-sm text-slate-300">
+              <Gauge className="h-4 w-4" /> Quality
+            </label>
+            <select
+              className={INPUT_CLS}
+              value={videoTier}
+              onChange={(e) =>
+                setVideoTier(e.target.value as (typeof VIDEO_TIERS)[number]["value"])
+              }
+            >
+              {VIDEO_TIERS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Brand color */}
           <div className="space-y-1.5">
             <label className="flex items-center gap-1.5 text-sm text-slate-300">
@@ -297,7 +324,7 @@ export function ImageToAdVideo() {
           </ClayButton>
 
           <p className="text-xs text-slate-500">
-            Powered by Google Veo3
+            Powered by Google Veo 3.1 Lite on Vertex AI
           </p>
         </Card>
 
@@ -322,7 +349,7 @@ export function ImageToAdVideo() {
           {generating && (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-gradient-to-br from-pink-500/10 via-purple-500/5 to-rose-400/5 p-12 text-center min-h-[300px]">
               <Loader2 className="h-12 w-12 text-pink-400 animate-spin mb-4" />
-              <p className="text-slate-300 font-medium">Creating your ad with Veo3...</p>
+              <p className="text-slate-300 font-medium">Creating your ad with Veo 3.1 Lite...</p>
               <p className="text-slate-500 text-xs mt-1">
                 This may take 2-5 minutes.
               </p>
