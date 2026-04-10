@@ -42,6 +42,8 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     restart: unless-stopped
+    # NextAuth + Google OAuth (same file as backend; keep secrets here)
+    env_file: .env
     environment:
       # Server-side API routes (e.g. /api/credits/me) call the backend by Docker DNS name
       INTERNAL_BACKEND_URL: http://backend:8000
