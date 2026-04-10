@@ -42,11 +42,18 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     restart: unless-stopped
-    # NextAuth + Google OAuth (same file as backend; keep secrets here)
-    env_file: .env
+    # Pass secrets from the project .env (Compose interpolates ${VAR} from that file).
+    # Avoids env_file: which hard-fails if .env is missing or unreadable on the host.
     environment:
-      # Server-side API routes (e.g. /api/credits/me) call the backend by Docker DNS name
       INTERNAL_BACKEND_URL: http://backend:8000
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
     expose:
       - "3000"
 
