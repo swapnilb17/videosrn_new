@@ -4,6 +4,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+
+class RedeemBody(BaseModel):
+    code: str = Field(..., min_length=1, max_length=64)
+
 LanguageCode = Literal["en", "hi", "mr"]
 
 DialogueSpeaker = Literal["male", "female"]

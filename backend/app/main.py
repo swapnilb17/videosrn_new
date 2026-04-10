@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -29,6 +30,20 @@ from app.db import (
     get_db_session,
     ping_database,
 )
+from app.credit_deps import resolve_user_for_credits
+from app.credit_holds import register_credit_hold, release_credit_hold
+from app.credit_service import (
+    IMAGE_CREDITS_PER_IMAGE,
+    InsufficientCreditsError,
+    STANDARD_VIDEO_CREDITS_PER_SECOND,
+    add_credits,
+    can_use_premium_models,
+    deduct_credits,
+    get_or_create_user,
+    redeem_starter_code,
+    tts_credits_for_chars,
+    veo_credits_for_seconds,
+)
 from app.job_store import (
     job_get_media_asset,
     job_insert_running,
@@ -37,7 +52,8 @@ from app.job_store import (
     job_update_script,
 )
 from app.media_store import media_insert, media_list_by_owner
-from app.schemas import GenerateResponse, LanguageCode
+from app.models import User
+from app.schemas import GenerateResponse, LanguageCode, RedeemBody
 from app.services.branding_logo import save_branding_logo_from_upload
 from app.services.user_assets import (
     normalize_address_form,
@@ -404,6 +420,61 @@ async def internal_user_media(
     return {"items": items}
 
 
+@app.get("/internal/credits/me")
+async def internal_credits_me(
+    request: Request,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+):
+    """Trusted: Next.js API route passes X-User-Email (and optional X-User-Sub) after NextAuth."""
+    if session is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    email = (request.headers.get("x-user-email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="Missing user identity")
+    settings = load_settings()
+    if not settings.credits_billing_enabled():
+        return {
+            "credits_enabled": False,
+            "balance": 0,
+            "plan": "free",
+        }
+    sub = (request.headers.get("x-user-sub") or "").strip() or None
+    u = await get_or_create_user(session, email=email, google_sub=sub)
+    await session.commit()
+    return {
+        "credits_enabled": True,
+        "balance": u.credit_balance,
+        "plan": u.plan,
+        "starter_redeem_available": not u.starter_redeem_completed,
+    }
+
+
+@app.post("/internal/credits/redeem")
+async def internal_credits_redeem(
+    request: Request,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    body: RedeemBody,
+):
+    if session is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    email = (request.headers.get("x-user-email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="Missing user identity")
+    sub = (request.headers.get("x-user-sub") or "").strip() or None
+    u = await get_or_create_user(session, email=email, google_sub=sub)
+    try:
+        await redeem_starter_code(session, u, body.code)
+        await session.commit()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.refresh(u)
+    return {
+        "ok": True,
+        "plan": u.plan,
+        "balance": u.credit_balance,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Job status polling (async video pipeline)
 # ---------------------------------------------------------------------------
@@ -539,6 +610,7 @@ async def generate(
     content_format: Annotated[str, Form()] = "",
     output_quality: Annotated[str, Form()] = "",
     user_email: Annotated[str, Form()] = "",
+    user_sub: Annotated[str, Form()] = "",
 ):
     settings = load_settings()
     _validate_persistence_config(settings)
@@ -554,19 +626,6 @@ async def generate(
     job_id = str(uuid.uuid4())
     job_uuid = uuid.UUID(job_id)
     job_dir = settings.artifact_root / job_id
-    try:
-        job_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        if e.errno == errno.ENOSPC:
-            logger.error("job=%s artifact_root full: %s", job_id, job_dir)
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Server disk is full (cannot write under ARTIFACT_ROOT). "
-                    "Free space or enlarge the EBS volume, then retry."
-                ),
-            ) from e
-        raise
 
     owner_sub: str | None = None
     if _google_user and isinstance(_google_user.get("sub"), str):
@@ -589,6 +648,20 @@ async def generate(
                 "to enable it."
             ),
         )
+
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            logger.error("job=%s artifact_root full: %s", job_id, job_dir)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Server disk is full (cannot write under ARTIFACT_ROOT). "
+                    "Free space or enlarge the EBS volume, then retry."
+                ),
+            ) from e
+        raise
 
     branding_file = job_dir / "branding_logo.png"
     branding_applied = await save_branding_logo_from_upload(logo, branding_file)
@@ -615,6 +688,40 @@ async def generate(
     )
 
     persist = settings.persistence_enabled() and session is not None
+    credit_cost = target_sec * STANDARD_VIDEO_CREDITS_PER_SECOND
+    if settings.credits_billing_enabled() and session is not None:
+        cu = await resolve_user_for_credits(
+            session,
+            google_user=_google_user,
+            user_email=user_email,
+            user_sub=user_sub,
+        )
+        if cu is None:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in and pass your account email (user_email) to use credits.",
+            )
+        locked = (
+            await session.execute(select(User).where(User.id == cu.id).with_for_update())
+        ).scalar_one()
+        try:
+            await deduct_credits(
+                session,
+                locked,
+                credit_cost,
+                reason="standard_video",
+                meta={"target_sec": target_sec, "job_id": job_id},
+            )
+        except InsufficientCreditsError as e:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits: need {credit_cost}, balance {e.balance}.",
+            ) from e
+        if not persist:
+            await session.commit()
+        register_credit_hold(job_id, locked.id, credit_cost)
 
     logger.info(
         "job=%s topic=%s language=%s target_sec=%s enhance_motion=%s branding=%s persist=%s "
@@ -740,6 +847,9 @@ async def _run_video_pipeline(
             except Exception:
                 logger.warning("job=%s mark_failed after crash also failed", job_id, exc_info=True)
     finally:
+        entry = _job_results.get(job_id)
+        ok = isinstance(entry, dict) and entry.get("status") == "done"
+        await release_credit_hold(session_factory, job_id, success=ok)
         if session is not None:
             await session.close()
 
@@ -1305,6 +1415,7 @@ async def api_generate_image(
     count: Annotated[int, Form()] = 1,
     image: UploadFile | None = File(None),
     user_email: Annotated[str, Form()] = "",
+    user_sub: Annotated[str, Form()] = "",
 ):
     """Standalone image generation (Gemini native, then Vertex Gemini, then Vertex Imagen).
 
@@ -1367,6 +1478,38 @@ async def api_generate_image(
             detail=f"All image generation attempts failed: {'; '.join(errors)}",
         )
 
+    settings_credits = get_settings()
+    img_cost = len(images) * IMAGE_CREDITS_PER_IMAGE
+    if settings_credits.credits_billing_enabled() and session is not None:
+        cu = await resolve_user_for_credits(
+            session,
+            google_user=None,
+            user_email=user_email,
+            user_sub=user_sub,
+        )
+        if cu is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in and pass user_email to use credits for image generation.",
+            )
+        locked = (
+            await session.execute(select(User).where(User.id == cu.id).with_for_update())
+        ).scalar_one()
+        try:
+            await deduct_credits(
+                session,
+                locked,
+                img_cost,
+                reason="generate_image",
+                meta={"count": len(images)},
+            )
+        except InsufficientCreditsError as e:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits: need {img_cost}, balance {e.balance}.",
+            ) from e
+        await session.commit()
+
     img_job_id = uuid.uuid4().hex[:12]
     ue = (user_email or "").strip()
     if ue and session is not None and images:
@@ -1399,14 +1542,60 @@ async def api_photo_to_video(
     camera_movement: Annotated[str, Form()] = "zoom_in",
     aspect_ratio: Annotated[str, Form()] = "16:9",
     user_email: Annotated[str, Form()] = "",
+    user_sub: Annotated[str, Form()] = "",
+    video_tier: Annotated[str, Form()] = "1080",
 ):
     """Generate video from a photo using Google Veo3."""
-    from app.services.veo3_video import generate_video_from_image, Veo3Error
+    from app.services.veo3_video import (
+        _veo_duration_seconds,
+        generate_video_from_image,
+        Veo3Error,
+    )
 
     settings = get_settings()
     image_bytes = await photo.read()
     if len(image_bytes) < 100:
         raise HTTPException(status_code=422, detail="Photo file is empty or too small")
+
+    snap_d = _veo_duration_seconds(duration)
+    is_1080 = (video_tier or "1080").strip().lower() != "720"
+    veo_cost = veo_credits_for_seconds(snap_d, is_1080p=is_1080)
+    charged_user: User | None = None
+    if settings.credits_billing_enabled() and session is not None:
+        cu = await resolve_user_for_credits(
+            session,
+            google_user=None,
+            user_email=user_email,
+            user_sub=user_sub,
+        )
+        if cu is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in and pass user_email to use credits for Veo video.",
+            )
+        if not can_use_premium_models(cu):
+            raise HTTPException(
+                status_code=403,
+                detail="Veo requires Starter. Redeem code Enably499 in Settings.",
+            )
+        locked = (
+            await session.execute(select(User).where(User.id == cu.id).with_for_update())
+        ).scalar_one()
+        try:
+            await deduct_credits(
+                session,
+                locked,
+                veo_cost,
+                reason="veo_photo_to_video",
+                meta={"duration_sec": snap_d, "tier": "1080" if is_1080 else "720"},
+            )
+        except InsufficientCreditsError as e:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits: need {veo_cost}, balance {e.balance}.",
+            ) from e
+        await session.commit()
+        charged_user = locked
 
     camera_desc = {
         "pan_left": "smooth camera pan from right to left",
@@ -1433,8 +1622,34 @@ async def api_photo_to_video(
             aspect_ratio=aspect_ratio,
         )
     except Veo3Error as e:
+        if charged_user is not None and session is not None:
+            try:
+                await session.refresh(charged_user)
+                await add_credits(
+                    session,
+                    charged_user,
+                    veo_cost,
+                    reason="refund_veo_failed",
+                    meta={"stage": "photo-to-video"},
+                )
+                await session.commit()
+            except Exception:
+                logger.warning("veo refund failed", exc_info=True)
         raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
+        if charged_user is not None and session is not None:
+            try:
+                await session.refresh(charged_user)
+                await add_credits(
+                    session,
+                    charged_user,
+                    veo_cost,
+                    reason="refund_veo_failed",
+                    meta={"stage": "photo-to-video"},
+                )
+                await session.commit()
+            except Exception:
+                logger.warning("veo refund failed", exc_info=True)
         logger.exception("photo-to-video failed: %s", e)
         raise HTTPException(status_code=500, detail="Video generation failed") from e
 
@@ -1481,14 +1696,61 @@ async def api_image_to_ad(
     brand_color: Annotated[str, Form()] = "#8b5cf6",
     logo: Annotated[UploadFile | None, File()] = None,
     user_email: Annotated[str, Form()] = "",
+    user_sub: Annotated[str, Form()] = "",
+    video_tier: Annotated[str, Form()] = "1080",
 ):
     """Generate an ad video from a product image using Google Veo3."""
-    from app.services.veo3_video import generate_video_from_image, Veo3Error
+    from app.services.veo3_video import (
+        _veo_duration_seconds,
+        generate_video_from_image,
+        Veo3Error,
+    )
 
     settings = get_settings()
     image_bytes = await product_image.read()
     if len(image_bytes) < 100:
         raise HTTPException(status_code=422, detail="Product image is empty or too small")
+
+    dur_req = min(int(duration), 15)
+    snap_d = _veo_duration_seconds(dur_req)
+    is_1080 = (video_tier or "1080").strip().lower() != "720"
+    veo_cost = veo_credits_for_seconds(snap_d, is_1080p=is_1080)
+    charged_user: User | None = None
+    if settings.credits_billing_enabled() and session is not None:
+        cu = await resolve_user_for_credits(
+            session,
+            google_user=None,
+            user_email=user_email,
+            user_sub=user_sub,
+        )
+        if cu is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in and pass user_email to use credits for Veo video.",
+            )
+        if not can_use_premium_models(cu):
+            raise HTTPException(
+                status_code=403,
+                detail="Veo requires Starter. Redeem code Enably499 in Settings.",
+            )
+        locked = (
+            await session.execute(select(User).where(User.id == cu.id).with_for_update())
+        ).scalar_one()
+        try:
+            await deduct_credits(
+                session,
+                locked,
+                veo_cost,
+                reason="veo_image_to_ad",
+                meta={"duration_sec": snap_d, "tier": "1080" if is_1080 else "720"},
+            )
+        except InsufficientCreditsError as e:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits: need {veo_cost}, balance {e.balance}.",
+            ) from e
+        await session.commit()
+        charged_user = locked
 
     template_desc = {
         "product_showcase": "cinematic product showcase with dynamic camera angles revealing the product from multiple perspectives",
@@ -1510,12 +1772,38 @@ async def api_image_to_ad(
             settings,
             image_bytes,
             prompt,
-            duration_seconds=min(duration, 15),
+            duration_seconds=dur_req,
             aspect_ratio=aspect_ratio,
         )
     except Veo3Error as e:
+        if charged_user is not None and session is not None:
+            try:
+                await session.refresh(charged_user)
+                await add_credits(
+                    session,
+                    charged_user,
+                    veo_cost,
+                    reason="refund_veo_failed",
+                    meta={"stage": "image-to-ad"},
+                )
+                await session.commit()
+            except Exception:
+                logger.warning("veo refund failed", exc_info=True)
         raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
+        if charged_user is not None and session is not None:
+            try:
+                await session.refresh(charged_user)
+                await add_credits(
+                    session,
+                    charged_user,
+                    veo_cost,
+                    reason="refund_veo_failed",
+                    meta={"stage": "image-to-ad"},
+                )
+                await session.commit()
+            except Exception:
+                logger.warning("veo refund failed", exc_info=True)
         logger.exception("image-to-ad failed: %s", e)
         raise HTTPException(status_code=500, detail="Ad video generation failed") from e
 
@@ -1558,6 +1846,7 @@ async def api_generate_voice(
     voice: Annotated[str, Form()] = "",
     speed: Annotated[float, Form()] = 1.0,
     user_email: Annotated[str, Form()] = "",
+    user_sub: Annotated[str, Form()] = "",
 ):
     """Generate speech audio from text using Google TTS / ElevenLabs."""
     settings = get_settings()
@@ -1603,6 +1892,37 @@ async def api_generate_voice(
 
     if tts_provider == "none":
         raise HTTPException(status_code=503, detail="No TTS provider available")
+
+    voice_cost = tts_credits_for_chars(len(text_clean))
+    if settings.credits_billing_enabled() and session is not None:
+        cu = await resolve_user_for_credits(
+            session,
+            google_user=None,
+            user_email=user_email,
+            user_sub=user_sub,
+        )
+        if cu is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in and pass user_email to use credits for voice generation.",
+            )
+        locked = (
+            await session.execute(select(User).where(User.id == cu.id).with_for_update())
+        ).scalar_one()
+        try:
+            await deduct_credits(
+                session,
+                locked,
+                voice_cost,
+                reason="tts_generate",
+                meta={"chars": len(text_clean)},
+            )
+        except InsufficientCreditsError as e:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits: need {voice_cost}, balance {e.balance}.",
+            ) from e
+        await session.commit()
 
     duration = 0.0
     try:

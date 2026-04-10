@@ -17,7 +17,7 @@ import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
-import { photoToVideo, type PhotoToVideoResponse } from "@/lib/api";
+import { appendCreditIdentity, photoToVideo, type PhotoToVideoResponse } from "@/lib/api";
 
 const DURATIONS = [
   { value: 5, label: "5s" },
@@ -46,7 +46,7 @@ const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
 
 export function PhotoToVideo() {
-  const { userEmail } = useAuth();
+  const { userEmail, userId } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -75,7 +75,8 @@ export function PhotoToVideo() {
     fd.append("duration", String(duration));
     fd.append("camera_movement", camera);
     fd.append("aspect_ratio", aspect);
-    if (userEmail) fd.append("user_email", userEmail);
+    fd.append("video_tier", "1080");
+    appendCreditIdentity(fd, userEmail, userId);
 
     try {
       const res = await photoToVideo(fd);

@@ -139,6 +139,44 @@ export function mediaDownloadUrl(jobId: string): string {
   return `/media/${jobId}/output.mp4?attachment=true`;
 }
 
+/** Attach billing identity for FastAPI credit checks (1 credit = ₹1). */
+export function appendCreditIdentity(
+  fd: FormData,
+  email: string,
+  userSub?: string,
+) {
+  const em = (email || "").trim();
+  if (em) fd.set("user_email", em);
+  const s = (userSub || "").trim();
+  if (s) fd.set("user_sub", s);
+}
+
+export type CreditsMeResponse = {
+  credits_enabled: boolean;
+  balance: number;
+  plan: string;
+  starter_redeem_available?: boolean;
+};
+
+export async function fetchCreditsMe(): Promise<CreditsMeResponse> {
+  const res = await fetch("/api/credits/me", { credentials: "include" });
+  return handleResponse<CreditsMeResponse>(res);
+}
+
+export async function redeemStarterCode(code: string): Promise<{
+  ok: boolean;
+  plan: string;
+  balance: number;
+}> {
+  const res = await fetch("/api/credits/redeem", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+    credentials: "include",
+  });
+  return handleResponse(res);
+}
+
 export type GenerateImageResponse = {
   job_id: string;
   images: { url: string; width: number; height: number; model: string }[];

@@ -30,6 +30,7 @@ import {
   fetchVoices,
   ttsPreviewUrl,
   mediaDownloadUrl,
+  appendCreditIdentity,
   type JobStatusResponse,
   type VoiceInfo,
 } from "@/lib/api";
@@ -123,7 +124,7 @@ function FileUploadField({
 }
 
 export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
-  const { userEmail } = useAuth();
+  const { userEmail, userId } = useAuth();
   // --- Left panel state ---
   const [topic, setTopic] = useState("");
   const [language, setLanguage] = useState("en");
@@ -212,7 +213,7 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     if (ctaFile) fd.append("cta_image", ctaFile);
     if (thumbFile) fd.append("thumbnail_image", thumbFile);
     if (address.trim()) fd.append("address", address.trim());
-    if (userEmail) fd.append("user_email", userEmail);
+    appendCreditIdentity(fd, userEmail, userId);
 
     try {
       const { job_id } = await submitVideoJob(fd);

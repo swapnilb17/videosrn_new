@@ -2,13 +2,68 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, String, Text, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class User(Base):
+    """Billing identity: credits + plan (free vs starter)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
+    google_sub: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
+    credit_balance: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    plan: Mapped[str] = mapped_column(String(32), nullable=False, default="free")
+    signup_grant_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    starter_redeem_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    ledger_entries: Mapped[list["CreditLedger"]] = relationship(
+        "CreditLedger",
+        back_populates="user",
+    )
+
+
+class CreditLedger(Base):
+    """Append-only credit movements."""
+
+    __tablename__ = "credit_ledger"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    balance_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    meta: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="ledger_entries")
 
 
 class MediaItem(Base):

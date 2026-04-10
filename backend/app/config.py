@@ -258,6 +258,7 @@ class Settings(BaseSettings):
         default="30/minute",
         validation_alias="RATE_LIMIT_TTS_PREVIEW",
     )
+    credits_enabled: bool = Field(default=True, validation_alias="CREDITS_ENABLED")
 
     def persistence_enabled(self) -> bool:
         return bool(
@@ -265,6 +266,10 @@ class Settings(BaseSettings):
             and (self.s3_bucket or "").strip()
             and (self.s3_region or "").strip()
         )
+
+    def credits_billing_enabled(self) -> bool:
+        """Credits require a configured database URL (Postgres/SQLite)."""
+        return bool(self.credits_enabled and (self.database_url or "").strip())
 
     def s3_key_prefix_for_job(self, job_id: str) -> str:
         p = (self.s3_prefix or "").strip()

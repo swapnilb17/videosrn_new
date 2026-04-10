@@ -1,29 +1,103 @@
+"use client";
+
+import { useState } from "react";
 import { Card } from "@/components/ui/card";
-import { pricingTiers } from "@/lib/mock-data";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/auth-context";
+import { ApiError, redeemStarterCode } from "@/lib/api";
 
 export default function SettingsPage() {
+  const { credits, creditsInfo, refreshCredits } = useAuth();
+  const [code, setCode] = useState("");
+  const [redeemMsg, setRedeemMsg] = useState<string | null>(null);
+  const [redeeming, setRedeeming] = useState(false);
+
+  async function handleRedeem(e: React.FormEvent) {
+    e.preventDefault();
+    setRedeemMsg(null);
+    setRedeeming(true);
+    try {
+      await redeemStarterCode(code.trim());
+      setRedeemMsg("Starter unlocked. You can use Veo (premium) until credits run out.");
+      setCode("");
+      refreshCredits();
+    } catch (err: unknown) {
+      const msg =
+        err instanceof ApiError
+          ? err.detail
+          : err instanceof Error
+            ? err.message
+            : "Could not redeem code";
+      setRedeemMsg(msg);
+    } finally {
+      setRedeeming(false);
+    }
+  }
+
+  const planLabel =
+    creditsInfo?.plan === "starter" ? "Starter" : "Free";
+
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-semibold">Settings</h1>
-      <Card className="space-y-2">
-        <p className="text-lg font-semibold">Workspace Preferences</p>
+
+      <Card className="space-y-3 p-4">
+        <p className="text-lg font-semibold">Credits &amp; plan</p>
         <p className="text-sm text-slate-300">
-          Defaults for voice, aspect ratio, and style presets can be configured here.
+          1 credit equals ₹1. New accounts receive 50 credits once. Standard
+          video uses 5 credits per second of target duration; images cost 5
+          credits each; voice uses 2 credits per 2,000 characters. Veo
+          (premium) requires Starter and bills 15–25 credits per second by tier.
+        </p>
+        <div className="flex flex-wrap gap-4 text-sm">
+          <span>
+            Balance:{" "}
+            <span className="font-semibold text-orange-200">{credits}</span>{" "}
+            credits
+          </span>
+          <span>
+            Plan: <span className="font-semibold">{planLabel}</span>
+          </span>
+        </div>
+      </Card>
+
+      <Card className="space-y-3 p-4">
+        <p className="text-lg font-semibold">Starter (redeem)</p>
+        <p className="text-sm text-slate-300">
+          Enter your invite code to unlock Veo and other premium models while you
+          have credits.
+        </p>
+        {creditsInfo?.starterRedeemAvailable === false &&
+        creditsInfo?.plan !== "starter" ? (
+          <p className="text-sm text-slate-400">Code already used.</p>
+        ) : creditsInfo?.plan === "starter" ? (
+          <p className="text-sm text-emerald-300/90">Starter is active.</p>
+        ) : (
+          <form onSubmit={handleRedeem} className="flex flex-wrap items-end gap-2">
+            <input
+              className="min-w-[200px] rounded-lg border border-white/15 bg-[#0d1020] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-400/40"
+              placeholder="Enably499"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              autoComplete="off"
+            />
+            <Button type="submit" disabled={redeeming || !code.trim()}>
+              {redeeming ? "…" : "Redeem"}
+            </Button>
+          </form>
+        )}
+        {redeemMsg && (
+          <p className="text-sm text-slate-300 whitespace-pre-wrap">{redeemMsg}</p>
+        )}
+      </Card>
+
+      <Card className="space-y-2 p-4">
+        <p className="text-lg font-semibold">Workspace preferences</p>
+        <p className="text-sm text-slate-300">
+          Defaults for voice, aspect ratio, and style presets can be configured
+          from each creation tool.
         </p>
       </Card>
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Pricing tiers</h2>
-        <div className="grid gap-4 md:grid-cols-3">
-          {pricingTiers.map((tier) => (
-            <Card key={tier.name} className="space-y-2">
-              <p className="font-semibold">{tier.name}</p>
-              <p className="text-xl font-bold">{tier.price}</p>
-              <p className="text-sm text-orange-200">{tier.credits}</p>
-              <p className="text-sm text-slate-300">{tier.description}</p>
-            </Card>
-          ))}
-        </div>
-      </section>
     </div>
   );
 }
