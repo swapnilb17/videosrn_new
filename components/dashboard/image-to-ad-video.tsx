@@ -322,10 +322,6 @@ export function ImageToAdVideo() {
               </span>
             )}
           </ClayButton>
-
-          <p className="text-xs text-slate-500">
-            Powered by Google Veo 3.1 Lite on Vertex AI
-          </p>
         </Card>
 
         {/* ========= RIGHT PANEL — Preview ========= */}
@@ -383,10 +379,6 @@ export function ImageToAdVideo() {
                 <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs">
                   <span className="text-slate-500">Duration</span>
                   <span className="text-slate-300">{result.duration_seconds}s</span>
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs">
-                  <span className="text-slate-500">Model</span>
-                  <span className="text-slate-300">{result.model}</span>
                 </span>
               </div>
 

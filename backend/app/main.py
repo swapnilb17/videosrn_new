@@ -65,7 +65,7 @@ from app.services.gemini_native_image import GeminiNativeImageError, generate_ge
 from app.services.google_imagen import GoogleImagenError, generate_imagen_slide_images
 from app.services.vertex_gemini_image import VertexGeminiImageError, generate_vertex_gemini_slide_images
 from app.services.image_prompts import script_visual_segments
-from app.services.mux_mp4 import mux_still_image_and_audio
+from app.services.mux_mp4 import mux_still_image_and_audio, overlay_frame_watermark_on_mp4
 from app.services.nano_banana import NanoBananaError, generate_slide_images
 from app.services.s3_storage import (
     S3UploadError,
@@ -1483,7 +1483,7 @@ async def api_generate_image(
                 "url": f"/media/img/{result.path.parent.name}/{result.path.name}",
                 "width": result.width,
                 "height": result.height,
-                "model": result.model,
+                "model": "",
             })
         except Exception as e:
             logger.exception("generate-image failed (image %s): %s", i + 1, e)
@@ -1671,6 +1671,9 @@ async def api_photo_to_video(
         logger.exception("photo-to-video failed: %s", e)
         raise HTTPException(status_code=500, detail="Video generation failed") from e
 
+    ff = (settings.ffmpeg_path or "").strip()
+    overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
+
     await _persist_veo3_output_to_s3(settings, video_path)
 
     job_dir_name = video_path.parent.name
@@ -1831,6 +1834,9 @@ async def api_image_to_ad(
                 logger.warning("veo refund failed", exc_info=True)
         logger.exception("image-to-ad failed: %s", e)
         raise HTTPException(status_code=500, detail="Ad video generation failed") from e
+
+    ff = (settings.ffmpeg_path or "").strip()
+    overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
 
     await _persist_veo3_output_to_s3(settings, video_path)
 
