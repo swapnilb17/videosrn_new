@@ -1671,9 +1671,6 @@ async def api_photo_to_video(
         logger.exception("photo-to-video failed: %s", e)
         raise HTTPException(status_code=500, detail="Video generation failed") from e
 
-    ff = (settings.ffmpeg_path or "").strip()
-    overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
-
     await _persist_veo3_output_to_s3(settings, video_path)
 
     job_dir_name = video_path.parent.name
