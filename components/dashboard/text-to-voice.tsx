@@ -14,6 +14,7 @@ import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
+import { downloadUrlAsFile, resolveMediaFilename } from "@/lib/client-download";
 import {
   appendCreditIdentity,
   fetchVoices,
@@ -50,9 +51,27 @@ export function TextToVoice() {
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateVoiceResponse | null>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+
+  async function handleDownloadAudio() {
+    if (!result?.audio_url) return;
+    setDownloading(true);
+    try {
+      const name = resolveMediaFilename(
+        result.audio_url,
+        `voice-${result.job_id}`,
+        "mp3",
+      );
+      await downloadUrlAsFile(result.audio_url, name);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Download failed");
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   const loadVoices = useCallback(async (lang: string) => {
     setVoicesLoading(true);
@@ -290,14 +309,20 @@ export function TextToVoice() {
                 <audio src={result.audio_url} controls className="w-full" />
               </div>
 
-              <a href={result.audio_url} download className="block">
-                <ClayButton className="w-full">
-                  <span className="flex items-center gap-2">
+              <ClayButton
+                className="w-full"
+                onClick={() => void handleDownloadAudio()}
+                disabled={downloading}
+              >
+                <span className="flex items-center gap-2">
+                  {downloading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
                     <Download className="h-4 w-4" />
-                    Download Audio
-                  </span>
-                </ClayButton>
-              </a>
+                  )}
+                  {downloading ? "Preparing download…" : "Download Audio"}
+                </span>
+              </ClayButton>
             </div>
           )}
         </Card>

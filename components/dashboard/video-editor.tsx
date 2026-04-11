@@ -24,6 +24,7 @@ import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
+import { downloadUrlAsFile } from "@/lib/client-download";
 import {
   submitVideoJob,
   pollJobStatus,
@@ -147,6 +148,7 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
 
   // --- Generation state ---
   const [generating, setGenerating] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<JobStatusResponse | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -184,6 +186,21 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
       if (longWaitTimerRef.current) clearTimeout(longWaitTimerRef.current);
     };
   }, []);
+
+  async function handleDownloadVideo() {
+    if (!result?.job_id) return;
+    setDownloading(true);
+    try {
+      await downloadUrlAsFile(
+        mediaDownloadUrl(result.job_id),
+        `learncast-${result.job_id}.mp4`,
+      );
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Download failed");
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   async function handleGenerate() {
     if (!topic.trim()) return;
@@ -494,17 +511,20 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
               </div>
 
               {/* Download */}
-              <a
-                href={mediaDownloadUrl(result.job_id)}
-                className="block"
+              <ClayButton
+                className="w-full"
+                onClick={() => void handleDownloadVideo()}
+                disabled={downloading}
               >
-                <ClayButton className="w-full">
-                  <span className="flex items-center gap-2">
+                <span className="flex items-center gap-2">
+                  {downloading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
                     <Download className="h-4 w-4" />
-                    Download Video
-                  </span>
-                </ClayButton>
-              </a>
+                  )}
+                  {downloading ? "Preparing download…" : "Download Video"}
+                </span>
+              </ClayButton>
             </div>
           )}
         </Card>

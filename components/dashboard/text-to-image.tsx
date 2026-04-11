@@ -17,6 +17,7 @@ import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
+import { downloadUrlAsFile, resolveMediaFilename } from "@/lib/client-download";
 import { appendCreditIdentity, generateImage, type GenerateImageResponse } from "@/lib/api";
 
 const TEXT_STYLES = [
@@ -69,6 +70,7 @@ export function TextToImage() {
   const [aspect, setAspect] = useState("1:1");
   const [count, setCount] = useState<number>(1);
   const [generating, setGenerating] = useState(false);
+  const [downloadIndex, setDownloadIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateImageResponse | null>(null);
 
@@ -76,6 +78,18 @@ export function TextToImage() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleDownloadImage(url: string, index: number) {
+    setDownloadIndex(index);
+    try {
+      const name = resolveMediaFilename(url, `generated-image-${index + 1}`, "png");
+      await downloadUrlAsFile(url, name);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Download failed");
+    } finally {
+      setDownloadIndex(null);
+    }
+  }
 
   const handleImageSelect = useCallback((file: File | null) => {
     if (!file) {
@@ -402,9 +416,23 @@ export function TextToImage() {
                   <div key={i} className="group relative rounded-xl overflow-hidden border border-white/15 bg-black">
                     <img src={img.url} alt={`Generated ${i + 1}`} className="w-full h-auto" />
                     <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                      <a href={img.url} download className="rounded-lg bg-white/20 backdrop-blur-sm p-2 hover:bg-white/30 transition">
-                        <Download className="h-5 w-5 text-white" />
-                      </a>
+                      <button
+                        type="button"
+                        disabled={downloadIndex === i}
+                        className="rounded-lg bg-white/20 backdrop-blur-sm p-2 hover:bg-white/30 transition disabled:opacity-50"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void handleDownloadImage(img.url, i);
+                        }}
+                        aria-label={`Download image ${i + 1}`}
+                      >
+                        {downloadIndex === i ? (
+                          <Loader2 className="h-5 w-5 animate-spin text-white" />
+                        ) : (
+                          <Download className="h-5 w-5 text-white" />
+                        )}
+                      </button>
                     </div>
                   </div>
                 ))}

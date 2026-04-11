@@ -1,7 +1,15 @@
 "use client";
 
 import { useSession, signOut } from "next-auth/react";
-import { useCallback, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 export type CreditsInfo = {
   balance: number;
@@ -19,7 +27,24 @@ function parseBalance(raw: unknown): number {
   return 0;
 }
 
-export function useAuth() {
+export type AuthContextValue = {
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  userName: string;
+  userEmail: string;
+  userId: string;
+  userImage: string;
+  credits: number;
+  creditsInfo: CreditsInfo | null;
+  creditsLoading: boolean;
+  creditsError: string | null;
+  refreshCredits: () => void;
+  logout: () => void;
+};
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
   const { data: session, status } = useSession();
   const [creditsInfo, setCreditsInfo] = useState<CreditsInfo | null>(null);
   const [creditsLoading, setCreditsLoading] = useState(false);
@@ -75,21 +100,43 @@ export function useAuth() {
     loadCredits();
   }, [loadCredits]);
 
-  const userId =
-    (session?.user as { id?: string } | undefined)?.id ?? "";
+  const userId = (session?.user as { id?: string } | undefined)?.id ?? "";
 
-  return {
-    isAuthenticated: status === "authenticated",
-    isLoading: status === "loading",
-    userName: session?.user?.name ?? "User",
-    userEmail: session?.user?.email ?? "",
-    userId,
-    userImage: session?.user?.image ?? "",
-    credits: creditsInfo?.balance ?? 0,
-    creditsInfo,
-    creditsLoading,
-    creditsError,
-    refreshCredits: loadCredits,
-    logout: () => signOut({ callbackUrl: "/" }),
-  };
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      isAuthenticated: status === "authenticated",
+      isLoading: status === "loading",
+      userName: session?.user?.name ?? "User",
+      userEmail: session?.user?.email ?? "",
+      userId,
+      userImage: session?.user?.image ?? "",
+      credits: creditsInfo?.balance ?? 0,
+      creditsInfo,
+      creditsLoading,
+      creditsError,
+      refreshCredits: loadCredits,
+      logout: () => signOut({ callbackUrl: "/" }),
+    }),
+    [
+      status,
+      session?.user?.name,
+      session?.user?.email,
+      session?.user?.image,
+      userId,
+      creditsInfo,
+      creditsLoading,
+      creditsError,
+      loadCredits,
+    ],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error("useAuth must be used within AuthProvider");
+  }
+  return ctx;
 }
