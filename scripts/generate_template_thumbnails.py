@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Generate placeholder template thumbnails for portrait style templates.
 
-Each thumbnail is a 400x400 image with a styled gradient, the template name,
-and an 'EnablyAI.com' watermark in the bottom-left corner.
+Each thumbnail is a 400x400 image with a styled gradient and the template name.
 
 Usage:
     python scripts/generate_template_thumbnails.py
@@ -22,13 +21,6 @@ FONT_CANDIDATES = [
     "C:\\Windows\\Fonts\\arialbd.ttf",
 ]
 
-FONT_REGULAR_CANDIDATES = [
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "C:\\Windows\\Fonts\\arial.ttf",
-]
-
-
 def load_font(size: int, candidates=None):
     for f in (candidates or FONT_CANDIDATES):
         try:
@@ -43,6 +35,26 @@ TEMPLATES = {
         "label": "Ink Sketch",
         "gradient": [(245, 240, 230), (30, 30, 30)],
         "text_color": (20, 20, 20),
+    },
+    "bold_text": {
+        "label": "Bold Text",
+        "gradient": [(255, 215, 0), (180, 0, 120)],
+        "text_color": (255, 255, 255),
+    },
+    "street_art": {
+        "label": "Street Art",
+        "gradient": [(80, 200, 255), (255, 80, 160)],
+        "text_color": (20, 20, 30),
+    },
+    "sticky_notes": {
+        "label": "Sticky Notes",
+        "gradient": [(255, 245, 120), (255, 200, 80)],
+        "text_color": (60, 50, 20),
+    },
+    "polaroid": {
+        "label": "Polaroid",
+        "gradient": [(250, 248, 240), (200, 190, 175)],
+        "text_color": (40, 35, 30),
     },
     "monochrome": {
         "label": "Monochrome",
@@ -114,22 +126,6 @@ def make_gradient(size: int, c1: tuple, c2: tuple) -> Image.Image:
     return img
 
 
-def add_watermark(draw: ImageDraw.ImageDraw, size: int):
-    wm_text = "EnablyAI.com"
-    wm_font = load_font(max(11, size // 30), FONT_REGULAR_CANDIDATES)
-    bbox = draw.textbbox((0, 0), wm_text, font=wm_font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    margin = max(8, size // 40)
-    pad_x, pad_y = 5, 3
-    x = margin + pad_x
-    y = size - margin - th - pad_y
-    draw.rounded_rectangle(
-        [margin, y - pad_y, x + tw + pad_x, y + th + pad_y],
-        radius=4, fill=(0, 0, 0, 140),
-    )
-    draw.text((x, y), wm_text, fill=(255, 255, 255, 200), font=wm_font)
-
-
 def generate_thumbnail(key: str, info: dict):
     c1, c2 = info["gradient"]
     img = make_gradient(SIZE, c1, c2).convert("RGBA")
@@ -145,8 +141,6 @@ def generate_thumbnail(key: str, info: dict):
     draw.text((x + shadow_offset, y + shadow_offset), info["label"],
               fill=(0, 0, 0, 100), font=label_font)
     draw.text((x, y), info["label"], fill=(r, g, b, 255), font=label_font)
-
-    add_watermark(draw, SIZE)
 
     out_path = OUT_DIR / f"{key}.jpg"
     img.convert("RGB").save(out_path, "JPEG", quality=88)

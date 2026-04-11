@@ -406,9 +406,6 @@ export function TextToImage() {
                         <Download className="h-5 w-5 text-white" />
                       </a>
                     </div>
-                    <div className="absolute bottom-2 left-2 rounded-full bg-black/60 backdrop-blur-sm px-2 py-0.5 text-[10px] text-slate-300">
-                      {img.model}
-                    </div>
                   </div>
                 ))}
               </div>

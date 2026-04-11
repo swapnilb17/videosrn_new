@@ -1,32 +1,14 @@
 #!/usr/bin/env python3
 """Create square template thumbnails from reference images.
 
-Crops to center-square, resizes to 400x400, applies EnablyAI.com watermark,
-and saves as JPEG in public/templates/.
+Crops to center-square, resizes to 400x400, and saves as JPEG in public/templates/.
 """
 
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 SIZE = 400
 OUT_DIR = Path(__file__).resolve().parent.parent / "public" / "templates"
-
-FONT_CANDIDATES = [
-    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "C:\\Windows\\Fonts\\arialbd.ttf",
-]
-
-
-def load_font(size: int):
-    for f in FONT_CANDIDATES:
-        try:
-            return ImageFont.truetype(f, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
 
 
 def center_crop_square(img: Image.Image) -> Image.Image:
@@ -37,37 +19,10 @@ def center_crop_square(img: Image.Image) -> Image.Image:
     return img.crop((left, top, left + side, top + side))
 
 
-def add_watermark(img: Image.Image) -> Image.Image:
-    canvas = img.convert("RGBA")
-    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-
-    wm_text = "EnablyAI.com"
-    font_size = max(11, canvas.width // 30)
-    font = load_font(font_size)
-
-    bbox = draw.textbbox((0, 0), wm_text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    margin = max(8, canvas.width // 40)
-    pad_x, pad_y = 5, 3
-    x = margin + pad_x
-    y = canvas.height - margin - th - pad_y
-
-    draw.rounded_rectangle(
-        [margin, y - pad_y, x + tw + pad_x, y + th + pad_y],
-        radius=4, fill=(0, 0, 0, 140),
-    )
-    draw.text((x, y), wm_text, fill=(255, 255, 255, 200), font=font)
-
-    result = Image.alpha_composite(canvas, overlay)
-    return result.convert("RGB")
-
-
 def process(src_path: str, out_name: str):
     img = Image.open(src_path)
     img = center_crop_square(img)
     img = img.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
-    img = add_watermark(img)
     out = OUT_DIR / f"{out_name}.jpg"
     img.save(out, "JPEG", quality=90)
     print(f"  {out_name}.jpg  ({src_path})")
