@@ -1,9 +1,10 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import {
+  INTERNAL_BACKEND_URL,
+  internalBackendHeaders,
+} from "@/lib/internal-backend";
 import { NextRequest, NextResponse } from "next/server";
-
-const BACKEND_URL =
-  process.env.INTERNAL_BACKEND_URL || "http://backend:8000";
 
 export async function GET(_request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -15,11 +16,11 @@ export async function GET(_request: NextRequest) {
 
   let res: Response;
   try {
-    res = await fetch(`${BACKEND_URL}/internal/credits/me`, {
-      headers: {
+    res = await fetch(`${INTERNAL_BACKEND_URL}/internal/credits/me`, {
+      headers: internalBackendHeaders({
         "x-user-email": session.user.email,
         ...(sub ? { "x-user-sub": sub } : {}),
-      },
+      }),
       cache: "no-store",
     });
   } catch (e) {

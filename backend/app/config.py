@@ -250,6 +250,8 @@ class Settings(BaseSettings):
         default=True,
         validation_alias="OPENAPI_ENABLED",
     )
+    # Required for /internal/* (Next.js proxy). Send X-Internal-Api-Key or Authorization: Bearer <value>.
+    internal_api_secret: str = Field(default="", validation_alias="INTERNAL_API_SECRET")
     rate_limit_generate: str = Field(
         default="12/minute",
         validation_alias="RATE_LIMIT_GENERATE",

@@ -1,7 +1,9 @@
 import asyncio
 import errno
+import hmac
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
@@ -256,6 +258,92 @@ def _media_file(settings: Settings, job_id: str, filename: str) -> Path:
     return path
 
 
+def _resolve_artifact_file_under_root(settings: Settings, *relative_segments: str) -> Path:
+    """Resolve a file path under artifact_root; reject traversal outside the root."""
+    root = settings.artifact_root.resolve()
+    candidate = root.joinpath(*relative_segments).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return candidate
+
+
+def _require_internal_api_key(request: Request, settings: Settings) -> None:
+    secret = (settings.internal_api_secret or "").strip()
+    if not secret:
+        raise HTTPException(
+            status_code=503,
+            detail="INTERNAL_API_SECRET is not configured; /internal routes are disabled.",
+        )
+    hdr = (request.headers.get("x-internal-api-key") or "").strip()
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        hdr = auth[7:].strip() or hdr
+    try:
+        if not hmac.compare_digest(hdr, secret):
+            raise HTTPException(status_code=401, detail="Invalid internal API credentials.")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid internal API credentials.") from None
+
+
+def _assert_local_topic_video_media_authorized(request: Request, settings: Settings, job_id: str) -> None:
+    """When jobs are on local disk (no DB/S3), enforce OAuth + optional .owner_sub sidecar."""
+    if not settings.google_oauth_enabled():
+        return
+    if not job_id or "/" in job_id or job_id in (".", ".."):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+    sess_user = request.session.get("user")
+    sub = sess_user.get("sub") if isinstance(sess_user, dict) else None
+    if not isinstance(sub, str) or not sub.strip():
+        raise HTTPException(
+            status_code=401,
+            detail="Sign in required to access this media.",
+        )
+    root = settings.artifact_root.resolve()
+    meta = (root / job_id / ".owner_sub").resolve()
+    try:
+        meta.relative_to(root / job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+    if not meta.is_file():
+        return
+    stored = meta.read_text(encoding="utf-8").strip()
+    if stored and stored != sub:
+        raise HTTPException(status_code=403, detail="Not allowed to access this media.")
+
+
+def _validate_standalone_img_path(job_dir: str, filename: str) -> None:
+    m = re.fullmatch(r"img_([0-9a-f]{12})", job_dir)
+    if not m:
+        raise HTTPException(status_code=404, detail="Image not found")
+    h12 = m.group(1)
+    if not re.fullmatch(rf"image_{h12}\.png", filename):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+
+def _validate_standalone_veo3_path(job_dir: str, filename: str) -> None:
+    m = re.fullmatch(r"veo3_([0-9a-f]{12})", job_dir)
+    if not m:
+        raise HTTPException(status_code=404, detail="Video not found")
+    h12 = m.group(1)
+    if not re.fullmatch(rf"video_{h12}\.mp4", filename):
+        raise HTTPException(status_code=404, detail="Video not found")
+
+
+def _validate_standalone_voice_path(job_id: str, filename: str) -> None:
+    if not re.fullmatch(r"^[0-9a-f]{12}$", job_id):
+        raise HTTPException(status_code=404, detail="Audio not found")
+    if not re.fullmatch(rf"audio_{job_id}\.mp3", filename):
+        raise HTTPException(status_code=404, detail="Audio not found")
+
+
 async def _persist_veo3_output_to_s3(settings: Settings, video_path: Path) -> None:
     """Copy Veo MP4 to S3 when bucket/region are configured; optionally remove local copy."""
     if not settings.s3_object_storage_configured():
@@ -345,6 +433,7 @@ async def serve_media(
             logger.warning("presign failed job=%s file=%s: %s", job_id, filename, e)
             raise HTTPException(status_code=503, detail="Could not sign media URL") from e
         return RedirectResponse(url=url, status_code=302)
+    _assert_local_topic_video_media_authorized(request, settings, job_id)
     path = _media_file(settings, job_id, filename)
     media = "audio/mpeg" if filename.endswith(".mp3") else "video/mp4"
     if attachment and download_as:
@@ -423,6 +512,7 @@ async def internal_user_media(
     nginx routing).  The user's email is passed in X-User-Email by the
     Next.js API route after verifying the NextAuth session server-side.
     """
+    _require_internal_api_key(request, load_settings())
     email = (request.headers.get("x-user-email") or "").strip()
     if not email:
         raise HTTPException(status_code=401, detail="Missing user identity")
@@ -439,6 +529,7 @@ async def internal_credits_me(
     session: Annotated[AsyncSession | None, Depends(get_db_session)],
 ):
     """Trusted: Next.js API route passes X-User-Email (and optional X-User-Sub) after NextAuth."""
+    _require_internal_api_key(request, load_settings())
     if session is None:
         raise HTTPException(status_code=503, detail="Database not configured")
     email = (request.headers.get("x-user-email") or "").strip()
@@ -468,6 +559,7 @@ async def internal_credits_redeem(
     session: Annotated[AsyncSession | None, Depends(get_db_session)],
     body: RedeemBody,
 ):
+    _require_internal_api_key(request, load_settings())
     if session is None:
         raise HTTPException(status_code=503, detail="Database not configured")
     email = (request.headers.get("x-user-email") or "").strip()
@@ -676,6 +768,11 @@ async def generate(
             ) from e
         raise
 
+    try:
+        (job_dir / ".owner_sub").write_text((owner_sub or "").strip(), encoding="utf-8")
+    except OSError:
+        logger.warning("job=%s could not write .owner_sub", job_id)
+
     branding_file = job_dir / "branding_logo.png"
     branding_applied = await save_branding_logo_from_upload(logo, branding_file)
     address_norm = normalize_address_form(address)
@@ -766,7 +863,7 @@ async def generate(
             owner_sub=owner_sub,
         )
 
-    _job_results[job_id] = {"job_id": job_id, "status": "running"}
+    _job_results[job_id] = {"job_id": job_id, "status": "running", "owner_sub": owner_sub}
 
     asyncio.create_task(
         _run_video_pipeline(
@@ -857,7 +954,12 @@ async def _run_video_pipeline(
         )
     except Exception as exc:
         logger.exception("job=%s pipeline failed: %s", job_id, exc)
-        _job_results[job_id] = {"job_id": job_id, "status": "failed", "error": str(exc)}
+        _job_results[job_id] = {
+            "job_id": job_id,
+            "status": "failed",
+            "error": str(exc),
+            "owner_sub": owner_sub,
+        }
         if persist and session is not None:
             try:
                 await job_mark_failed(session, job_uuid, str(exc)[:4000])
@@ -904,7 +1006,12 @@ async def _do_video_pipeline(
     async def _fail(msg: str) -> None:
         if persist and session is not None:
             await job_mark_failed(session, job_uuid, msg)
-        _job_results[job_id] = {"job_id": job_id, "status": "failed", "error": msg}
+        _job_results[job_id] = {
+            "job_id": job_id,
+            "status": "failed",
+            "error": msg,
+            "owner_sub": owner_sub,
+        }
 
     t0 = time.perf_counter()
     try:
@@ -1327,6 +1434,7 @@ async def _do_video_pipeline(
         "video_height": visual_settings.video_height,
         "tts_provider": tts_provider,
         "visual_mode": visual_mode,
+        "owner_sub": owner_sub,
     }
 
 
@@ -1339,9 +1447,8 @@ async def _do_video_pipeline(
 async def serve_generated_image(job_dir: str, filename: str):
     """Serve standalone generated images."""
     settings = get_settings()
-    file_path = settings.artifact_root / job_dir / filename
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Image not found")
+    _validate_standalone_img_path(job_dir, filename)
+    file_path = _resolve_artifact_file_under_root(settings, job_dir, filename)
     return FileResponse(file_path, media_type="image/png")
 
 
@@ -1349,7 +1456,14 @@ async def serve_generated_image(job_dir: str, filename: str):
 async def serve_veo3_video(job_dir: str, filename: str):
     """Serve Veo-generated videos from local disk, or redirect to S3 presigned URL when applicable."""
     settings = get_settings()
-    file_path = settings.artifact_root / job_dir / filename
+    _validate_standalone_veo3_path(job_dir, filename)
+    file_path = settings.artifact_root.resolve() / job_dir / filename
+    root = settings.artifact_root.resolve()
+    try:
+        file_path = file_path.resolve()
+        file_path.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Video not found") from None
     if file_path.is_file():
         return FileResponse(file_path, media_type="video/mp4")
     if settings.s3_object_storage_configured():
@@ -1367,9 +1481,9 @@ async def serve_veo3_video(job_dir: str, filename: str):
 async def serve_generated_voice(job_id: str, filename: str):
     """Serve standalone generated voice audio."""
     settings = get_settings()
-    file_path = settings.artifact_root / f"voice_{job_id}" / filename
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Audio not found")
+    _validate_standalone_voice_path(job_id, filename)
+    voice_dir = f"voice_{job_id}"
+    file_path = _resolve_artifact_file_under_root(settings, voice_dir, filename)
     return FileResponse(file_path, media_type="audio/mpeg")
 
 

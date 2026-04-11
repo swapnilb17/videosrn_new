@@ -1,9 +1,10 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import {
+  INTERNAL_BACKEND_URL,
+  internalBackendHeaders,
+} from "@/lib/internal-backend";
 import { NextRequest, NextResponse } from "next/server";
-
-const BACKEND_URL =
-  process.env.INTERNAL_BACKEND_URL || "http://backend:8000";
 
 export async function GET(request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -15,8 +16,8 @@ export async function GET(request: NextRequest) {
   const type = searchParams.get("type") || "";
   const qs = type ? `?type=${encodeURIComponent(type)}` : "";
 
-  const res = await fetch(`${BACKEND_URL}/internal/user-media${qs}`, {
-    headers: { "x-user-email": session.user.email },
+  const res = await fetch(`${INTERNAL_BACKEND_URL}/internal/user-media${qs}`, {
+    headers: internalBackendHeaders({ "x-user-email": session.user.email }),
     cache: "no-store",
   });
 

@@ -1,9 +1,10 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import {
+  INTERNAL_BACKEND_URL,
+  internalBackendHeaders,
+} from "@/lib/internal-backend";
 import { NextRequest, NextResponse } from "next/server";
-
-const BACKEND_URL =
-  process.env.INTERNAL_BACKEND_URL || "http://backend:8000";
 
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -20,13 +21,13 @@ export async function POST(request: NextRequest) {
 
   const sub = (session.user as { id?: string }).id;
 
-  const res = await fetch(`${BACKEND_URL}/internal/credits/redeem`, {
+  const res = await fetch(`${INTERNAL_BACKEND_URL}/internal/credits/redeem`, {
     method: "POST",
-    headers: {
+    headers: internalBackendHeaders({
       "Content-Type": "application/json",
       "x-user-email": session.user.email,
       ...(sub ? { "x-user-sub": sub } : {}),
-    },
+    }),
     body: JSON.stringify({ code: body.code ?? "" }),
   });
 

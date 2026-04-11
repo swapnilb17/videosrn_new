@@ -46,6 +46,7 @@ services:
     # Avoids env_file: which hard-fails if .env is missing or unreadable on the host.
     environment:
       INTERNAL_BACKEND_URL: http://backend:8000
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
       NEXTAUTH_URL: ${NEXTAUTH_URL:-}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
       AUTH_SECRET: ${AUTH_SECRET:-}
