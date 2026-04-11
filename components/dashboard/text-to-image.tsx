@@ -344,10 +344,6 @@ export function TextToImage() {
               </span>
             )}
           </ClayButton>
-
-          <p className="text-xs text-slate-500">
-            Powered by Gemini + Imagen (3-tier failover)
-          </p>
         </Card>
 
         {/* ========= RIGHT PANEL — Preview ========= */}

@@ -28,7 +28,6 @@ from app.services.vertex_imagen import (
     _credentials_path,
     _generate_one_with_region_failover as vertex_imagen_generate_one,
 )
-from app.services.image_watermark import watermark_file
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +107,6 @@ async def generate_standalone_image(
                     max_http_attempts=_STANDALONE_GEMINI_NATIVE_HTTP_ATTEMPTS,
                 )
             if out_path.is_file() and out_path.stat().st_size > 100:
-                watermark_file(out_path)
                 logger.info("Standalone image: Gemini native OK")
                 return ImageGenResult(out_path, w, h, "gemini-3.1-flash-preview")
         except (GeminiNativeImageError, Exception) as e:
@@ -134,7 +132,6 @@ async def generate_standalone_image(
                             reference_png_bytes=reference_image,
                         )
                         if ok and out_path.is_file() and out_path.stat().st_size > 100:
-                            watermark_file(out_path)
                             logger.info("Standalone image: Vertex Gemini OK (location=%s)", loc)
                             return ImageGenResult(out_path, w, h, "gemini-2.5-flash")
             except (VertexGeminiImageError, Exception) as e:
@@ -159,7 +156,6 @@ async def generate_standalone_image(
                         prompt, out_path,
                     )
                 if out_path.is_file() and out_path.stat().st_size > 100:
-                    watermark_file(out_path)
                     logger.info("Standalone image: Vertex Imagen OK")
                     return ImageGenResult(out_path, w, h, "imagen-4.0")
             except (GoogleImagenError, Exception) as e:
