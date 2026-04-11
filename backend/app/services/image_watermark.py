@@ -6,11 +6,10 @@ PIL Image or raw PNG bytes on disk.
 
 from __future__ import annotations
 
-import io
 import logging
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +37,8 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 
 def apply_watermark(img: Image.Image) -> Image.Image:
     """Return a copy of *img* with the EnablyAI.com watermark on the bottom-left."""
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
     canvas = img.convert("RGBA")
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -76,10 +77,14 @@ def apply_watermark(img: Image.Image) -> Image.Image:
 
 def watermark_file(path: Path) -> None:
     """Read a PNG/JPEG from *path*, apply the watermark, and overwrite it."""
+    tmp = path.with_name(f"{path.name}.wm.tmp")
     try:
-        img = Image.open(path)
-        result = apply_watermark(img)
-        result.save(path, format="PNG")
-        logger.debug("Watermark applied to %s", path.name)
+        with Image.open(path) as img:
+            result = apply_watermark(img)
+        result.save(tmp, format="PNG", optimize=True)
+        tmp.replace(path)
+        logger.info("Watermark applied to %s", path.name)
     except Exception:
-        logger.warning("Failed to apply watermark to %s", path.name, exc_info=True)
+        tmp.unlink(missing_ok=True)
+        logger.exception("Failed to apply watermark to %s", path.name)
+        raise

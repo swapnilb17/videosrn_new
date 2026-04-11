@@ -1403,6 +1403,12 @@ _PORTRAIT_IDENTITY_SUFFIX = (
     " No text, captions, watermarks, or logos in the image."
 )
 
+# Stronger than generic "no logos" — some image models paint model-id strings in a corner.
+_STANDALONE_IMAGE_NO_LABEL_SUFFIX = (
+    " Do not render any visible model names, API labels, version strings "
+    "(such as gemini, flash, preview, imagen, or vertex), corner captions, or technology watermarks."
+)
+
 _PORTRAIT_STYLE_PREFIX = {
     "ink_sketch": "Transform this person into a dramatic black and white ink sketch portrait. Crosshatching technique, half-face close-up composition, textured paper background, ink splatter accents, bold contrast, celebrity magazine cover quality.",
     "bold_text": "Transform this person into a dramatic black and white ink sketch portrait, half-face close-up composition with bold large title text overlaid on the empty side. Crosshatching and ink splatter details, textured paper, magazine poster design.",
@@ -1470,6 +1476,8 @@ async def api_generate_image(
     else:
         style_prefix = _TEXT_STYLE_PREFIX.get(style, "")
         full_prompt = f"{style_prefix}{prompt_clean}. No text, captions, watermarks, or logos in the image."
+
+    full_prompt = f"{full_prompt}{_STANDALONE_IMAGE_NO_LABEL_SUFFIX}"
 
     images = []
     errors = []
