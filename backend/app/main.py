@@ -289,6 +289,31 @@ def _require_internal_api_key(request: Request, settings: Settings) -> None:
         raise HTTPException(status_code=401, detail="Invalid internal API credentials.") from None
 
 
+def _resolve_google_sub_for_media(request: Request, settings: Settings) -> str | None:
+    """OAuth subject for /media: browser session, or trusted Next.js proxy (internal key + X-User-Sub)."""
+    secret = (settings.internal_api_secret or "").strip()
+    hdr = (request.headers.get("x-internal-api-key") or "").strip()
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        hdr = auth[7:].strip() or hdr
+    if secret and hdr:
+        try:
+            if not hmac.compare_digest(hdr, secret):
+                raise HTTPException(status_code=401, detail="Invalid internal API credentials.")
+        except ValueError:
+            raise HTTPException(status_code=401, detail="Invalid internal API credentials.") from None
+        sub = (request.headers.get("x-user-sub") or "").strip()
+        if not sub:
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in required to access this media.",
+            )
+        return sub
+    sess_user = request.session.get("user")
+    sub = sess_user.get("sub") if isinstance(sess_user, dict) else None
+    return sub if isinstance(sub, str) and sub.strip() else None
+
+
 def _assert_local_topic_video_media_authorized(request: Request, settings: Settings, job_id: str) -> None:
     """When jobs are on local disk (no DB/S3), enforce OAuth + optional .owner_sub sidecar."""
     if not settings.google_oauth_enabled():
@@ -299,8 +324,7 @@ def _assert_local_topic_video_media_authorized(request: Request, settings: Setti
         uuid.UUID(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Not found") from None
-    sess_user = request.session.get("user")
-    sub = sess_user.get("sub") if isinstance(sess_user, dict) else None
+    sub = _resolve_google_sub_for_media(request, settings)
     if not isinstance(sub, str) or not sub.strip():
         raise HTTPException(
             status_code=401,
@@ -412,8 +436,7 @@ async def serve_media(
         if not s3_key:
             raise HTTPException(status_code=404, detail="File not ready")
         if settings.google_oauth_enabled():
-            sess_user = request.session.get("user")
-            sub = sess_user.get("sub") if isinstance(sess_user, dict) else None
+            sub = _resolve_google_sub_for_media(request, settings)
             if not isinstance(sub, str) or not sub.strip():
                 raise HTTPException(
                     status_code=401,

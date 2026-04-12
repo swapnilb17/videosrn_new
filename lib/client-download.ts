@@ -7,7 +7,8 @@ function mediaPathForProxy(raw: string): string | null {
   try {
     const u = new URL(raw, window.location.origin);
     if (u.origin !== window.location.origin) return null;
-    const path = u.pathname + u.search;
+    // Path only — query is rebuilt by the proxy/backend (avoids ?a=1?filename= in fetch URL).
+    const path = u.pathname;
     return path.startsWith("/media/") ? path : null;
   } catch {
     return null;

@@ -1,6 +1,9 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { INTERNAL_BACKEND_URL } from "@/lib/internal-backend";
+import {
+  INTERNAL_BACKEND_URL,
+  internalBackendHeaders,
+} from "@/lib/internal-backend";
 import { NextRequest, NextResponse } from "next/server";
 
 /**
@@ -35,10 +38,26 @@ export async function GET(
     : `${backend}${pathname}${pathname.includes("?") ? "&" : "?"}attachment=1`;
 
   const cookie = request.headers.get("cookie") ?? "";
+  const user = session.user as { email?: string | null; id?: string | null };
+  const email = (user.email ?? "").trim();
+  const sub = (user.id ?? "").trim();
+
+  const headers: Record<string, string> = { cookie };
+  // FastAPI /media OAuth checks session cookie; NextAuth cookie is different. When
+  // INTERNAL_API_SECRET is set, trust X-User-Sub from our verified NextAuth session.
+  if (sub) {
+    Object.assign(
+      headers,
+      internalBackendHeaders({
+        ...(email ? { "x-user-email": email } : {}),
+        "x-user-sub": sub,
+      }),
+    );
+  }
 
   const upstream = await fetch(upstreamUrl, {
     method: "GET",
-    headers: { cookie },
+    headers,
     redirect: "follow",
   });
 
