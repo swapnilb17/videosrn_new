@@ -123,20 +123,17 @@ export default function SettingsPage() {
       <Card className="space-y-3 p-4">
         <p className="text-lg font-semibold">Invite &amp; credit codes</p>
         <p className="text-sm text-slate-300">
-          Enter a code to unlock Starter (Veo and premium models) and add credits. Promo
-          codes <span className="text-orange-200/90">Enably2000</span>,{" "}
-          <span className="text-orange-200/90">Enably1500</span>,{" "}
-          <span className="text-orange-200/90">Enably1000</span>, and{" "}
-          <span className="text-orange-200/90">Enably700</span> grant that many credits
-          each and can be used only once worldwide (share one code per tester). Starter
-          invite <span className="text-orange-200/90">Enably499</span> tops you up toward
-          500 credits if you are below that.
+          Enter a code you received to unlock Starter (Veo and premium models) and add
+          credits. Credit promos add a fixed bundle and can each be used only once
+          worldwide. The Starter invite tops your balance up toward 500 credits if you
+          are below that. Use <strong className="font-medium text-slate-200">Check code</strong>{" "}
+          to confirm a code before redeeming.
         </p>
         {creditsInfo?.starterRedeemAvailable === false &&
         creditsInfo?.plan !== "starter" ? (
           <p className="text-sm text-slate-400">
             Starter invite is marked used on this account — you can still redeem a credit
-            promo (Enably2000, …) below if available.
+            promo below if you have a separate code.
           </p>
         ) : creditsInfo?.plan === "starter" ? (
           <p className="text-sm text-emerald-300/90">
@@ -147,7 +144,7 @@ export default function SettingsPage() {
         <form onSubmit={handleRedeem} className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
           <input
             className="min-w-[200px] flex-1 rounded-lg border border-white/15 bg-[#0d1020] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-400/40"
-            placeholder="e.g. Enably2000 or Enably499"
+            placeholder="Invite or promo code"
             value={code}
             onChange={(e) => setCode(e.target.value)}
             autoComplete="off"

@@ -337,7 +337,7 @@ async def _redeem_starter_normalized(session: AsyncSession, user: User) -> None:
 
 
 async def redeem_code(session: AsyncSession, user: User, code: str) -> None:
-    """Starter invite (enably499) or single-use credit promo codes (Enably2000, …)."""
+    """Starter invite or single-use credit promo codes (normalized, case-insensitive)."""
     raw = (code or "").strip()
     if not raw:
         raise ValueError("code is required")

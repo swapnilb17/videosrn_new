@@ -1759,7 +1759,7 @@ async def api_photo_to_video(
         if not can_use_premium_models(cu):
             raise HTTPException(
                 status_code=403,
-                detail="Veo requires Starter. Redeem code Enably499 in Settings.",
+                detail="Veo requires Starter. Redeem an invite or promo code in Settings.",
             )
         locked = (
             await session.execute(select(User).where(User.id == cu.id).with_for_update())
@@ -1921,7 +1921,7 @@ async def api_image_to_ad(
         if not can_use_premium_models(cu):
             raise HTTPException(
                 status_code=403,
-                detail="Veo requires Starter. Redeem code Enably499 in Settings.",
+                detail="Veo requires Starter. Redeem an invite or promo code in Settings.",
             )
         locked = (
             await session.execute(select(User).where(User.id == cu.id).with_for_update())
