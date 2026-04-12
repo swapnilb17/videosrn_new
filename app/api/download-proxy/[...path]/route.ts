@@ -4,33 +4,29 @@ import { INTERNAL_BACKEND_URL } from "@/lib/internal-backend";
 import { NextRequest, NextResponse } from "next/server";
 
 /**
- * Stream media downloads through Next.js so the browser does not need CORS on S3
- * after a 302 from /media (fetch(blob) would fail client-side).
+ * Stream media downloads through Next.js (avoids S3 CORS in the browser).
+ * Path is in the URL segments (not query) so nginx/proxies do not break on %2F in ?path=.
  */
-export async function GET(request: NextRequest) {
+export async function GET(
+  request: NextRequest,
+  context: { params: Promise<{ path?: string[] }> },
+) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const pathParam = request.nextUrl.searchParams.get("path");
-  const filenameParam = request.nextUrl.searchParams.get("filename");
-
-  if (!pathParam) {
+  const { path: segments } = await context.params;
+  if (!segments?.length) {
     return NextResponse.json({ error: "Missing path" }, { status: 400 });
   }
 
-  let pathname: string;
-  try {
-    const u = new URL(pathParam, "http://localhost");
-    pathname = u.pathname + u.search;
-  } catch {
-    return NextResponse.json({ error: "Invalid path" }, { status: 400 });
-  }
-
+  const pathname = `/${segments.join("/")}`;
   if (!pathname.startsWith("/media/") || pathname.includes("..")) {
     return NextResponse.json({ error: "Invalid path" }, { status: 400 });
   }
+
+  const filenameParam = request.nextUrl.searchParams.get("filename");
 
   const backend = INTERNAL_BACKEND_URL.replace(/\/$/, "");
   const hasAttachment = /[?&]attachment=/.test(pathname);

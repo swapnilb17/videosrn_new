@@ -15,11 +15,15 @@ function mediaPathForProxy(raw: string): string | null {
 }
 
 async function downloadViaSameOriginProxy(path: string, filename: string): Promise<void> {
-  const qs = new URLSearchParams({ path, filename });
-  const res = await fetch(`/api/download-proxy?${qs.toString()}`, {
-    method: "GET",
-    credentials: "include",
-  });
+  const trimmed = path.replace(/^\/+/, "");
+  const qs = new URLSearchParams({ filename });
+  const res = await fetch(
+    `/api/download-proxy/${encodeURI(trimmed)}?${qs.toString()}`,
+    {
+      method: "GET",
+      credentials: "include",
+    },
+  );
   if (!res.ok) {
     let detail = `Download failed (${res.status})`;
     try {
