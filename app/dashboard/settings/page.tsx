@@ -4,13 +4,41 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError, redeemStarterCode } from "@/lib/api";
+import { ApiError, checkCreditCode, redeemStarterCode } from "@/lib/api";
 
 export default function SettingsPage() {
   const { credits, creditsInfo, creditsLoading, creditsError, refreshCredits } = useAuth();
   const [code, setCode] = useState("");
   const [redeemMsg, setRedeemMsg] = useState<string | null>(null);
   const [redeeming, setRedeeming] = useState(false);
+  const [checking, setChecking] = useState(false);
+
+  async function handleCheckCode() {
+    setRedeemMsg(null);
+    const trimmed = code.trim();
+    if (!trimmed) {
+      setRedeemMsg("Enter a code first.");
+      return;
+    }
+    setChecking(true);
+    try {
+      const r = await checkCreditCode(trimmed);
+      setRedeemMsg(
+        r.message ||
+          (r.valid ? "Code looks valid — you can redeem it." : "Code is not valid for redemption."),
+      );
+    } catch (err: unknown) {
+      const msg =
+        err instanceof ApiError
+          ? err.detail
+          : err instanceof Error
+            ? err.message
+            : "Could not check code";
+      setRedeemMsg(msg);
+    } finally {
+      setChecking(false);
+    }
+  }
 
   async function handleRedeem(e: React.FormEvent) {
     e.preventDefault();
@@ -19,7 +47,7 @@ export default function SettingsPage() {
     try {
       await redeemStarterCode(code.trim());
       setRedeemMsg(
-        "Starter unlocked — balance topped up to 500 credits (if below). Veo (premium) available while you have credits.",
+        "Redeemed successfully — credits were added per the code. Starter (Veo and premium models) stays available while you have balance.",
       );
       setCode("");
       refreshCredits();
@@ -93,30 +121,46 @@ export default function SettingsPage() {
       </Card>
 
       <Card className="space-y-3 p-4">
-        <p className="text-lg font-semibold">Starter (redeem)</p>
+        <p className="text-lg font-semibold">Invite &amp; credit codes</p>
         <p className="text-sm text-slate-300">
-          Enter your invite code to unlock Veo and other premium models while you
-          have credits.
+          Enter a code to unlock Starter (Veo and premium models) and add credits. Promo
+          codes <span className="text-orange-200/90">Enably2000</span>,{" "}
+          <span className="text-orange-200/90">Enably1500</span>,{" "}
+          <span className="text-orange-200/90">Enably1000</span>, and{" "}
+          <span className="text-orange-200/90">Enably700</span> grant that many credits
+          each and can be used only once worldwide (share one code per tester). Starter
+          invite <span className="text-orange-200/90">Enably499</span> tops you up toward
+          500 credits if you are below that.
         </p>
         {creditsInfo?.starterRedeemAvailable === false &&
         creditsInfo?.plan !== "starter" ? (
-          <p className="text-sm text-slate-400">Code already used.</p>
+          <p className="text-sm text-slate-400">
+            Starter invite is marked used on this account — you can still redeem a credit
+            promo (Enably2000, …) below if available.
+          </p>
         ) : creditsInfo?.plan === "starter" ? (
-          <p className="text-sm text-emerald-300/90">Starter is active.</p>
-        ) : (
-          <form onSubmit={handleRedeem} className="flex flex-wrap items-end gap-2">
-            <input
-              className="min-w-[200px] rounded-lg border border-white/15 bg-[#0d1020] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-400/40"
-              placeholder="Enably499"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              autoComplete="off"
-            />
+          <p className="text-sm text-emerald-300/90">
+            Starter is active. You can still redeem a one-time credit promo code here if
+            that code has not been used yet.
+          </p>
+        ) : null}
+        <form onSubmit={handleRedeem} className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
+          <input
+            className="min-w-[200px] flex-1 rounded-lg border border-white/15 bg-[#0d1020] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-400/40"
+            placeholder="e.g. Enably2000 or Enably499"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            autoComplete="off"
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" disabled={checking || !code.trim()} onClick={handleCheckCode}>
+              {checking ? "…" : "Check code"}
+            </Button>
             <Button type="submit" disabled={redeeming || !code.trim()}>
               {redeeming ? "…" : "Redeem"}
             </Button>
-          </form>
-        )}
+          </div>
+        </form>
         {redeemMsg && (
           <p className="text-sm text-slate-300 whitespace-pre-wrap">{redeemMsg}</p>
         )}

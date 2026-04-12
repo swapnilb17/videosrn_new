@@ -39,9 +39,10 @@ from app.credit_service import (
     InsufficientCreditsError,
     add_credits,
     can_use_premium_models,
+    check_credit_code,
     deduct_credits,
     get_or_create_user,
-    redeem_starter_code,
+    redeem_code,
     standard_video_credit_cost,
     tts_credits_for_chars,
     veo_credits_for_seconds,
@@ -591,7 +592,7 @@ async def internal_credits_redeem(
     sub = (request.headers.get("x-user-sub") or "").strip() or None
     u = await get_or_create_user(session, email=email, google_sub=sub)
     try:
-        await redeem_starter_code(session, u, body.code)
+        await redeem_code(session, u, body.code)
         await session.commit()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -601,6 +602,26 @@ async def internal_credits_redeem(
         "plan": u.plan,
         "balance": u.credit_balance,
     }
+
+
+@app.post("/internal/credits/check-code")
+async def internal_credits_check_code(
+    request: Request,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    body: RedeemBody,
+):
+    """Validate a redeem / promo code without applying it (trusted internal route)."""
+    _require_internal_api_key(request, load_settings())
+    if session is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    email = (request.headers.get("x-user-email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="Missing user identity")
+    sub = (request.headers.get("x-user-sub") or "").strip() or None
+    u = await get_or_create_user(session, email=email, google_sub=sub)
+    result = await check_credit_code(session, u, body.code)
+    await session.commit()
+    return result
 
 
 # ---------------------------------------------------------------------------

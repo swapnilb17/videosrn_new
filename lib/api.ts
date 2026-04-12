@@ -177,6 +177,29 @@ export async function redeemStarterCode(code: string): Promise<{
   return handleResponse(res);
 }
 
+export type CheckCreditCodeResponse = {
+  ok?: boolean;
+  valid: boolean;
+  kind?: string;
+  message?: string;
+  credits?: number;
+  credits_top_up?: number;
+  target_balance?: number;
+  already_used_globally?: boolean;
+  already_used_on_account?: boolean;
+  reason?: string;
+};
+
+export async function checkCreditCode(code: string): Promise<CheckCreditCodeResponse> {
+  const res = await fetch("/api/credits/check-code", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+    credentials: "include",
+  });
+  return handleResponse<CheckCreditCodeResponse>(res);
+}
+
 export type GenerateImageResponse = {
   job_id: string;
   images: { url: string; width: number; height: number; model: string }[];

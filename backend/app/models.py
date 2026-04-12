@@ -41,6 +41,26 @@ class User(Base):
     )
 
 
+class CreditPromoRedemption(Base):
+    """One row per promo code string — first successful redeem wins (global single-use)."""
+
+    __tablename__ = "credit_promo_redemptions"
+
+    code_normalized: Mapped[str] = mapped_column(String(64), primary_key=True)
+    redeemed_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    credits_amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class CreditLedger(Base):
     """Append-only credit movements."""
 
