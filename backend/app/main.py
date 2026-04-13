@@ -339,7 +339,13 @@ async def _run_photo_to_video_job(
 
     ff = (settings.ffmpeg_path or "").strip()
     try:
-        overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
+        # ffmpeg/ffprobe use blocking subprocess — must not run on the event loop or all
+        # concurrent requests (/health, /internal/user-media, job polling) hang until done.
+        await asyncio.to_thread(
+            overlay_frame_watermark_on_mp4,
+            video_path,
+            ffmpeg_explicit=ff,
+        )
         await _persist_veo3_output_to_s3(settings, video_path)
     except Exception as e:
         logger.exception("photo-to-video job=%s postprocess failed: %s", job_id, e)
@@ -460,7 +466,11 @@ async def _run_image_to_ad_job(
 
     ff = (settings.ffmpeg_path or "").strip()
     try:
-        overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
+        await asyncio.to_thread(
+            overlay_frame_watermark_on_mp4,
+            video_path,
+            ffmpeg_explicit=ff,
+        )
         await _persist_veo3_output_to_s3(settings, video_path)
     except Exception as e:
         logger.exception("image-to-ad job=%s postprocess failed: %s", job_id, e)
