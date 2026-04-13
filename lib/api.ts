@@ -65,7 +65,10 @@ async function handleResponse<T>(res: Response): Promise<T> {
     let detail = `HTTP ${res.status}`;
     try {
       const body = await res.json();
-      detail = body.detail || detail;
+      detail =
+        (typeof body.detail === "string" && body.detail) ||
+        (typeof body.error === "string" && body.error) ||
+        detail;
     } catch {
       /* ignore parse failures */
     }
@@ -295,7 +298,16 @@ export async function fetchUserMedia(
   type?: string,
 ): Promise<MediaItemResponse[]> {
   const qs = type ? `?type=${encodeURIComponent(type)}` : "";
-  const res = await fetch(`/api/user-media${qs}`, { credentials: "include" });
-  const data = await handleResponse<{ items: MediaItemResponse[] }>(res);
-  return data.items;
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 45_000);
+  try {
+    const res = await fetch(`/api/user-media${qs}`, {
+      credentials: "include",
+      signal: ac.signal,
+    });
+    const data = await handleResponse<{ items?: MediaItemResponse[] }>(res);
+    return Array.isArray(data.items) ? data.items : [];
+  } finally {
+    clearTimeout(t);
+  }
 }
