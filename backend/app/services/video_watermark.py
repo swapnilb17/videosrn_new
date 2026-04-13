@@ -1,4 +1,8 @@
-"""Video overlay: optional logo, product, CTA, address; Enably credit bottom-center (PIL + FFmpeg)."""
+"""Video overlay: optional logo, product, CTA, address; optional bottom-center credit line (PIL + FFmpeg).
+
+Still images use ``image_watermark`` (EnablyAI.com, bottom-left). This module's credit string is
+off by default so Veo/slideshow overlays do not duplicate branding when source frames are already watermarked.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-WATERMARK_TEXT = "Powered by EnablyAI.com"
+# Set to e.g. "Powered by EnablyAI.com" to show a bottom-center plate on video overlays.
+WATERMARK_TEXT = ""
 
 _FONT_CANDIDATES = [
     "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -90,7 +95,7 @@ def write_watermark_overlay_png(
 ) -> None:
     """
     Full-frame RGBA PNG (transparent) for FFmpeg overlay.
-    Stack (bottom → top): optional CTA image, optional address, Powered by plate,
+    Stack (bottom → top): optional CTA image, optional address, optional credit plate,
     optional product (BR), optional logo (TL). Slideshows normally use a generated
     CTA slide instead of this CTA layer; see ``cta_end_slide`` and ``mux_slideshow_with_audio``.
     """
@@ -104,13 +109,19 @@ def write_watermark_overlay_png(
     gap = max(8, height // 120)
     pad = max(6, height // 160)
 
-    fs_credit = max(16, height // 48)
-    font_credit = _load_font(fs_credit)
-    text = WATERMARK_TEXT
-    bbox_cr = draw.textbbox((0, 0), text, font=font_credit)
-    tw, th = bbox_cr[2] - bbox_cr[0], bbox_cr[3] - bbox_cr[1]
-    x_text = (width - tw) // 2
-    y_text = height - margin_y - th
+    credit_text = (WATERMARK_TEXT or "").strip()
+    font_credit: ImageFont.FreeTypeFont | ImageFont.ImageFont | None = None
+    if credit_text:
+        fs_credit = max(16, height // 48)
+        font_credit = _load_font(fs_credit)
+        bbox_cr = draw.textbbox((0, 0), credit_text, font=font_credit)
+        tw, th = bbox_cr[2] - bbox_cr[0], bbox_cr[3] - bbox_cr[1]
+        x_text = (width - tw) // 2
+        y_text = height - margin_y - th
+        cursor_bottom = y_text - pad - gap
+    else:
+        x_text = y_text = tw = th = 0
+        cursor_bottom = height - margin_y
 
     fs_addr = max(13, height // 52)
     font_addr = _load_font(fs_addr)
@@ -128,9 +139,7 @@ def write_watermark_overlay_png(
         except OSError:
             cta_im = None
 
-    # Vertical stack above the credit line (going upward from y_text - pad)
-    cursor_bottom = y_text - pad - gap
-
+    # Vertical stack above the credit line (or bottom margin if no credit)
     if cta_im is not None:
         cw, ch = cta_im.size
         cx = (width - cw) // 2
@@ -157,12 +166,13 @@ def write_watermark_overlay_png(
             y_line += line_h
         cursor_bottom = y_block_top - gap
 
-    draw.rounded_rectangle(
-        [x_text - pad, y_text - pad, x_text + tw + pad, y_text + th + pad],
-        radius=6,
-        fill=(0, 0, 0, 130),
-    )
-    draw.text((x_text, y_text), text, fill=(255, 255, 255, 240), font=font_credit)
+    if credit_text and font_credit is not None:
+        draw.rounded_rectangle(
+            [x_text - pad, y_text - pad, x_text + tw + pad, y_text + th + pad],
+            radius=6,
+            fill=(0, 0, 0, 130),
+        )
+        draw.text((x_text, y_text), credit_text, fill=(255, 255, 255, 240), font=font_credit)
 
     if a.product_image_path is not None and a.product_image_path.is_file():
         try:
