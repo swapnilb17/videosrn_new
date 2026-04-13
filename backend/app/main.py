@@ -253,7 +253,7 @@ async def _run_photo_to_video_job(
     is_1080: bool,
     charged_user_id: uuid.UUID | None,
     veo_cost: int,
-    user_email: str,
+    owner_email_for_media: str,
 ) -> None:
     """Background Veo pipeline for /api/photo-to-video (avoids proxy timeouts on long requests)."""
     from app.services.veo3_video import (
@@ -358,49 +358,42 @@ async def _run_photo_to_video_job(
     title_base = motion_text or (
         "Text to video" if veo_task == "text_to_video" else "Image to video"
     )
-    ue = (user_email or "").strip().lower()
-    if not ue and charged_user_id is not None and session_factory is not None:
-        _sess = session_factory()
-        try:
-            urow = await _sess.get(User, charged_user_id)
-            if urow is not None and (urow.email or "").strip():
-                ue = urow.email.strip().lower()
-        finally:
-            await _sess.close()
+    ue = (owner_email_for_media or "").strip().lower()
     if not ue:
         logger.warning(
-            "photo-to-video job=%s Media Library skip: no owner email "
-            "(empty user_email form and no billed user row)",
+            "photo-to-video job=%s Media Library skip: empty owner_email_for_media",
             job_id,
         )
     elif session_factory is not None:
-        session = session_factory()
         try:
-            await media_insert(
-                session,
-                owner_email=ue,
-                media_type="video",
-                title=title_base[:200],
-                media_url=video_url,
-                source_service="photo-to-video",
-                extra={
-                    "duration": snap_d,
-                    "camera": camera_movement,
-                    "model": veo_model,
-                    "resolution": "1080p" if is_1080 else "720p",
-                    "task": veo_task,
-                    "end_frame": bool(end_bytes),
-                },
+            async with session_factory() as session:
+                await media_insert(
+                    session,
+                    owner_email=ue,
+                    media_type="video",
+                    title=title_base[:200],
+                    media_url=video_url,
+                    source_service="photo-to-video",
+                    extra={
+                        "duration": int(snap_d),
+                        "camera": str(camera_movement),
+                        "model": str(veo_model),
+                        "resolution": "1080p" if is_1080 else "720p",
+                        "task": str(veo_task),
+                        "end_frame": bool(end_bytes),
+                    },
+                )
+            logger.info(
+                "photo-to-video job=%s media_insert ok owner=%s",
+                job_id,
+                ue[:48],
             )
-            await session.commit()
         except Exception:
             logger.error(
                 "photo-to-video job=%s media_insert failed",
                 job_id,
                 exc_info=True,
             )
-        finally:
-            await session.close()
 
     _job_results[job_id] = {
         "job_id": job_id,
@@ -426,7 +419,7 @@ async def _run_image_to_ad_job(
     is_1080: bool,
     charged_user_id: uuid.UUID | None,
     veo_cost: int,
-    user_email: str,
+    owner_email_for_media: str,
 ) -> None:
     """Background Veo pipeline for /api/image-to-ad."""
     from app.services.veo3_video import (
@@ -498,47 +491,40 @@ async def _run_image_to_ad_job(
     job_dir_name = video_path.parent.name
     ad_video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
     aw, ah = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
-    ue = (user_email or "").strip().lower()
-    if not ue and charged_user_id is not None and session_factory is not None:
-        _sess = session_factory()
-        try:
-            urow = await _sess.get(User, charged_user_id)
-            if urow is not None and (urow.email or "").strip():
-                ue = urow.email.strip().lower()
-        finally:
-            await _sess.close()
+    ue = (owner_email_for_media or "").strip().lower()
     if not ue:
         logger.warning(
-            "image-to-ad job=%s Media Library skip: no owner email "
-            "(empty user_email form and no billed user row)",
+            "image-to-ad job=%s Media Library skip: empty owner_email_for_media",
             job_id,
         )
     elif session_factory is not None:
-        session = session_factory()
         try:
-            await media_insert(
-                session,
-                owner_email=ue,
-                media_type="video",
-                title=(ad_copy_clean or "Image to Ad video")[:200],
-                media_url=ad_video_url,
-                source_service="image-to-ad",
-                extra={
-                    "template": template,
-                    "duration": snap_d,
-                    "model": veo_model,
-                    "resolution": "1080p" if is_1080 else "720p",
-                },
+            async with session_factory() as session:
+                await media_insert(
+                    session,
+                    owner_email=ue,
+                    media_type="video",
+                    title=(ad_copy_clean or "Image to Ad video")[:200],
+                    media_url=ad_video_url,
+                    source_service="image-to-ad",
+                    extra={
+                        "template": str(template),
+                        "duration": int(snap_d),
+                        "model": str(veo_model),
+                        "resolution": "1080p" if is_1080 else "720p",
+                    },
+                )
+            logger.info(
+                "image-to-ad job=%s media_insert ok owner=%s",
+                job_id,
+                ue[:48],
             )
-            await session.commit()
         except Exception:
             logger.error(
                 "image-to-ad job=%s media_insert failed",
                 job_id,
                 exc_info=True,
             )
-        finally:
-            await session.close()
 
     _job_results[job_id] = {
         "job_id": job_id,
@@ -2171,6 +2157,16 @@ async def api_photo_to_video(
         await session.commit()
         charged_user = locked
 
+    # Resolve library owner while request-scoped DB session is still open (same as credits row).
+    owner_email_for_media = (user_email or "").strip().lower()
+    if not owner_email_for_media and charged_user is not None:
+        owner_email_for_media = (charged_user.email or "").strip().lower()
+    if getattr(app.state, "session_factory", None) is not None and not owner_email_for_media:
+        raise HTTPException(
+            status_code=422,
+            detail="user_email is required so finished videos appear in Media Library.",
+        )
+
     job_id = uuid.uuid4().hex[:12]
     _job_results[job_id] = {"job_id": job_id, "status": "running"}
     asyncio.create_task(
@@ -2186,7 +2182,7 @@ async def api_photo_to_video(
             is_1080=is_1080,
             charged_user_id=charged_user.id if charged_user is not None else None,
             veo_cost=veo_cost,
-            user_email=(user_email or "").strip(),
+            owner_email_for_media=owner_email_for_media,
         )
     )
     return JSONResponse(
@@ -2266,6 +2262,15 @@ async def api_image_to_ad(
         await session.commit()
         charged_user = locked
 
+    owner_email_for_media = (user_email or "").strip().lower()
+    if not owner_email_for_media and charged_user is not None:
+        owner_email_for_media = (charged_user.email or "").strip().lower()
+    if getattr(app.state, "session_factory", None) is not None and not owner_email_for_media:
+        raise HTTPException(
+            status_code=422,
+            detail="user_email is required so finished videos appear in Media Library.",
+        )
+
     job_id = uuid.uuid4().hex[:12]
     _job_results[job_id] = {"job_id": job_id, "status": "running"}
     asyncio.create_task(
@@ -2280,7 +2285,7 @@ async def api_image_to_ad(
             is_1080=is_1080,
             charged_user_id=charged_user.id if charged_user is not None else None,
             veo_cost=veo_cost,
-            user_email=(user_email or "").strip(),
+            owner_email_for_media=owner_email_for_media,
         )
     )
     return JSONResponse(
