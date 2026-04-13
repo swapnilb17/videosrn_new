@@ -8,6 +8,7 @@ from typing import Any
 
 import boto3
 from botocore.client import BaseClient
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import Settings
@@ -40,6 +41,12 @@ def s3_client(settings: Settings) -> BaseClient:
     endpoint = (settings.s3_endpoint_url or "").strip()
     if endpoint:
         kw["endpoint_url"] = endpoint
+    # Avoid indefinite hangs on bad IAM/network (default botocore timeouts are very high).
+    cfg = Config(
+        connect_timeout=15,
+        read_timeout=120,
+        retries={"max_attempts": 3, "mode": "standard"},
+    )
     with _without_blank_aws_profile():
         if profile:
             session = boto3.session.Session(
@@ -48,7 +55,7 @@ def s3_client(settings: Settings) -> BaseClient:
             )
         else:
             session = boto3.session.Session(region_name=region)
-        return session.client("s3", **kw)
+        return session.client("s3", config=cfg, **kw)
 
 
 def upload_file(

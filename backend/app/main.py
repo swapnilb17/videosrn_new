@@ -341,12 +341,26 @@ async def _run_photo_to_video_job(
     try:
         # ffmpeg/ffprobe use blocking subprocess — must not run on the event loop or all
         # concurrent requests (/health, /internal/user-media, job polling) hang until done.
-        await asyncio.to_thread(
-            overlay_frame_watermark_on_mp4,
-            video_path,
-            ffmpeg_explicit=ff,
+        logger.info("photo-to-video job=%s postprocess: watermark start", job_id)
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                overlay_frame_watermark_on_mp4,
+                video_path,
+                ffmpeg_explicit=ff,
+            ),
+            timeout=900.0,
         )
+        logger.info("photo-to-video job=%s postprocess: watermark done", job_id)
+        logger.info("photo-to-video job=%s postprocess: s3 start", job_id)
         await _persist_veo3_output_to_s3(settings, video_path)
+        logger.info("photo-to-video job=%s postprocess: s3 done", job_id)
+    except asyncio.TimeoutError:
+        logger.error(
+            "photo-to-video job=%s postprocess: watermark timed out after 900s",
+            job_id,
+        )
+        await _fail("Video processing timed out during watermark")
+        return
     except Exception as e:
         logger.exception("photo-to-video job=%s postprocess failed: %s", job_id, e)
         await _fail("Video processing failed")
@@ -477,12 +491,26 @@ async def _run_image_to_ad_job(
 
     ff = (settings.ffmpeg_path or "").strip()
     try:
-        await asyncio.to_thread(
-            overlay_frame_watermark_on_mp4,
-            video_path,
-            ffmpeg_explicit=ff,
+        logger.info("image-to-ad job=%s postprocess: watermark start", job_id)
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                overlay_frame_watermark_on_mp4,
+                video_path,
+                ffmpeg_explicit=ff,
+            ),
+            timeout=900.0,
         )
+        logger.info("image-to-ad job=%s postprocess: watermark done", job_id)
+        logger.info("image-to-ad job=%s postprocess: s3 start", job_id)
         await _persist_veo3_output_to_s3(settings, video_path)
+        logger.info("image-to-ad job=%s postprocess: s3 done", job_id)
+    except asyncio.TimeoutError:
+        logger.error(
+            "image-to-ad job=%s postprocess: watermark timed out after 900s",
+            job_id,
+        )
+        await _fail("Ad video processing timed out during watermark")
+        return
     except Exception as e:
         logger.exception("image-to-ad job=%s postprocess failed: %s", job_id, e)
         await _fail("Ad video processing failed")
@@ -708,13 +736,23 @@ async def _persist_veo3_output_to_s3(settings: Settings, video_path: Path) -> No
         return
     job_dir = video_path.parent.name
     try:
-        await asyncio.to_thread(
-            upload_veo3_mp4,
-            settings,
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                upload_veo3_mp4,
+                settings,
+                job_dir,
+                video_path.name,
+                video_path,
+            ),
+            timeout=300.0,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Veo video S3 upload timed out after 300s (local file kept): %s/%s",
             job_dir,
             video_path.name,
-            video_path,
         )
+        return
     except S3UploadError as e:
         logger.warning("Veo video S3 upload failed (local file kept): %s", e)
         return
