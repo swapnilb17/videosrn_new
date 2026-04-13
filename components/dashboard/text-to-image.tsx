@@ -184,12 +184,12 @@ export function TextToImage() {
             <textarea
               className={`${INPUT_CLS} h-28 resize-none`}
               placeholder="A futuristic city at sunset with flying cars..."
-              maxLength={500}
+              maxLength={1000}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
             />
             <span className="block text-right text-xs text-slate-500">
-              {prompt.length}/500
+              {prompt.length}/1000
             </span>
           </div>
 

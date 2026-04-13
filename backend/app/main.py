@@ -109,6 +109,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+# Max length for user-authored prompts/topics/ad copy across Topic → Video, Veo flows, and Text → Image.
+USER_PROMPT_MAX_CHARS = 1000
+
 
 def _rate_limit_key(request: Request) -> str:
     xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
@@ -746,7 +749,7 @@ async def generate(
     background_tasks: BackgroundTasks,
     session: Annotated[AsyncSession | None, Depends(get_db_session)],
     _google_user: GoogleUserDep,
-    topic: Annotated[str, Form(min_length=1, max_length=500)],
+    topic: Annotated[str, Form(min_length=1, max_length=USER_PROMPT_MAX_CHARS)],
     language: Annotated[str, Form()] = "en",
     target_duration_seconds: Annotated[str, Form()] = "59",
     enhance_motion: Annotated[str, Form()] = "",
@@ -1609,6 +1612,11 @@ async def api_generate_image(
     prompt_clean = (prompt or "").strip()
     if not prompt_clean:
         raise HTTPException(status_code=422, detail="prompt is required")
+    if len(prompt_clean) > USER_PROMPT_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"prompt too long (max {USER_PROMPT_MAX_CHARS} characters)",
+        )
 
     count = max(1, min(count, 4))
     logger.info(
@@ -1751,6 +1759,11 @@ async def api_photo_to_video(
         )
 
     motion_text = (motion_prompt or "").strip()
+    if len(motion_text) > USER_PROMPT_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Prompt too long (max {USER_PROMPT_MAX_CHARS} characters)",
+        )
     if veo_task == "text_to_video" and len(motion_text) < 3:
         raise HTTPException(status_code=422, detail="Enter a prompt for text-to-video")
 
@@ -1973,6 +1986,13 @@ async def api_image_to_ad(
     )
 
     settings = get_settings()
+    ad_copy_clean = (ad_copy or "").strip()
+    if len(ad_copy_clean) > USER_PROMPT_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Ad copy too long (max {USER_PROMPT_MAX_CHARS} characters)",
+        )
+
     image_bytes = await product_image.read()
     if len(image_bytes) < 100:
         raise HTTPException(status_code=422, detail="Product image is empty or too small")
@@ -2027,8 +2047,8 @@ async def api_image_to_ad(
     }.get(template, "cinematic product showcase")
 
     prompt = f"Create a {template_desc} for this product."
-    if ad_copy:
-        prompt += f" The ad message: {ad_copy.strip()[:200]}."
+    if ad_copy_clean:
+        prompt += f" The ad message: {ad_copy_clean}."
     if cta_text:
         prompt += f" End with a call to action: {cta_text.strip()[:50]}."
     prompt += " Professional advertising quality, smooth transitions, premium feel."
@@ -2091,7 +2111,7 @@ async def api_image_to_ad(
                 session,
                 owner_email=ue,
                 media_type="video",
-                title=(ad_copy or "Image to Ad video")[:200],
+                title=(ad_copy_clean or "Image to Ad video")[:200],
                 media_url=ad_video_url,
                 source_service="image-to-ad",
                 extra={

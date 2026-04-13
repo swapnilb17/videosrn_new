@@ -19,7 +19,8 @@ class DialogueTurn(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    topic: str = Field(..., min_length=1, max_length=500)
+    # Keep max_length in sync with USER_PROMPT_MAX_CHARS in app.main.
+    topic: str = Field(..., min_length=1, max_length=1000)
     language: LanguageCode = "en"
 
 

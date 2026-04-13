@@ -297,13 +297,13 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
             <label className="text-sm text-slate-300">Topic</label>
             <textarea
               className={`${INPUT_CLS} h-28 resize-none`}
-              placeholder="Enter your video topic (max 500 chars)..."
-              maxLength={500}
+              placeholder="Enter your video topic (max 1000 characters)…"
+              maxLength={1000}
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
             />
             <span className="block text-right text-xs text-slate-500">
-              {topic.length}/500
+              {topic.length}/1000
             </span>
           </div>
 

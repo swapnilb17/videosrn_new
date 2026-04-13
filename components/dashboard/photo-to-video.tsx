@@ -173,7 +173,7 @@ export function PhotoToVideo() {
             <textarea
               className={`${INPUT_CLS} min-h-[88px] resize-y`}
               placeholder="Write your prompt…"
-              maxLength={1200}
+              maxLength={1000}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
             />

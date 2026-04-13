@@ -197,14 +197,14 @@ export function ImageToAdVideo() {
               <Type className="h-4 w-4" /> Ad Copy / Script
             </label>
             <textarea
-              className={`${INPUT_CLS} h-20 resize-none`}
+              className={`${INPUT_CLS} min-h-[88px] resize-y`}
               placeholder="Your product is amazing because..."
-              maxLength={500}
+              maxLength={1000}
               value={adCopy}
               onChange={(e) => setAdCopy(e.target.value)}
             />
             <span className="block text-right text-xs text-slate-500">
-              {adCopy.length}/500
+              {adCopy.length}/1000
             </span>
           </div>
 
