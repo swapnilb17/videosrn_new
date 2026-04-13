@@ -11,6 +11,21 @@ from app.services.video_watermark import (
 
 logger = logging.getLogger(__name__)
 
+_FFPROBE_TIMEOUT_SEC = 45
+# Re-encode can be slow on small VMs; cap subprocess so the API job cannot hang forever.
+_FFMPEG_OVERLAY_TIMEOUT_MIN_SEC = 300
+_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC = 1200
+
+
+def _ffmpeg_overlay_timeout_sec(video_path: Path) -> int:
+    try:
+        n = video_path.stat().st_size
+    except OSError:
+        n = 0
+    # Veo MP4s are short but large; small EC2 instances need headroom for libx264.
+    scaled = 180 + min(900, max(0, n) // 120_000)
+    return max(_FFMPEG_OVERLAY_TIMEOUT_MIN_SEC, min(_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC, scaled))
+
 
 def _ffprobe_has_audio_stream(ffprobe: str, video_path: Path) -> bool:
     r = subprocess.run(
@@ -29,6 +44,7 @@ def _ffprobe_has_audio_stream(ffprobe: str, video_path: Path) -> bool:
         capture_output=True,
         text=True,
         check=False,
+        timeout=_FFPROBE_TIMEOUT_SEC,
     )
     return r.returncode == 0 and bool((r.stdout or "").strip())
 
@@ -63,6 +79,7 @@ def overlay_frame_watermark_on_mp4(
         capture_output=True,
         text=True,
         check=False,
+        timeout=_FFPROBE_TIMEOUT_SEC,
     )
     if proc_dim.returncode != 0 or not (proc_dim.stdout or "").strip():
         raise RuntimeError(f"ffprobe dimension failed: {proc_dim.stderr}")
@@ -77,9 +94,14 @@ def overlay_frame_watermark_on_mp4(
         write_watermark_overlay_png(w, h, wm, assets=assets or FrameOverlayAssets())
         has_audio = _ffprobe_has_audio_stream(ffprobe, video_path)
         fc = "[0:v][1:v]overlay=0:0:format=auto[outv]"
+        enc_timeout = _ffmpeg_overlay_timeout_sec(video_path)
+        # veryfast: much quicker than "fast" on small instances; fine for a short credit overlay pass.
         if has_audio:
             cmd = [
                 ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
                 "-y",
                 "-i",
                 str(video_path),
@@ -96,9 +118,11 @@ def overlay_frame_watermark_on_mp4(
                 "-c:v",
                 "libx264",
                 "-crf",
-                "20",
+                "23",
                 "-preset",
-                "fast",
+                "veryfast",
+                "-threads",
+                "0",
                 "-c:a",
                 "copy",
                 str(tmp_out),
@@ -106,6 +130,9 @@ def overlay_frame_watermark_on_mp4(
         else:
             cmd = [
                 ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
                 "-y",
                 "-i",
                 str(video_path),
@@ -120,12 +147,35 @@ def overlay_frame_watermark_on_mp4(
                 "-c:v",
                 "libx264",
                 "-crf",
-                "20",
+                "23",
                 "-preset",
-                "fast",
+                "veryfast",
+                "-threads",
+                "0",
                 str(tmp_out),
             ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        logger.info(
+            "ffmpeg credit overlay: timeout=%ss size=%s bytes",
+            enc_timeout,
+            video_path.stat().st_size if video_path.is_file() else 0,
+        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=enc_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "ffmpeg credit overlay timed out after %ss (input %s bytes)",
+                enc_timeout,
+                video_path.stat().st_size if video_path.is_file() else 0,
+            )
+            raise RuntimeError(
+                f"Video credit overlay timed out after {enc_timeout}s; try a larger instance or raise timeout"
+            ) from None
         if proc.returncode != 0:
             logger.error("ffmpeg credit overlay failed: %s", proc.stderr)
             raise RuntimeError("Video credit overlay failed (ffmpeg)")
