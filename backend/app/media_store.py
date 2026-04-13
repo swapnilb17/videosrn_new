@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import MediaItem
@@ -22,11 +22,14 @@ async def media_insert(
     thumbnail_url: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> uuid.UUID:
+    owner_norm = (owner_email or "").strip().lower()
+    if not owner_norm:
+        raise ValueError("owner_email is required for media_insert")
     item_id = uuid.uuid4()
     session.add(
         MediaItem(
             id=item_id,
-            owner_email=owner_email,
+            owner_email=owner_norm,
             media_type=media_type,
             title=title,
             media_url=media_url,
@@ -48,10 +51,8 @@ async def media_list_by_owner(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Return media items for a user, newest first. Strict tenant isolation."""
-    stmt = (
-        select(MediaItem)
-        .where(MediaItem.owner_email == owner_email)
-    )
+    owner_norm = (owner_email or "").strip().lower()
+    stmt = select(MediaItem).where(func.lower(MediaItem.owner_email) == owner_norm)
     if media_type:
         stmt = stmt.where(MediaItem.media_type == media_type)
     stmt = stmt.order_by(MediaItem.created_at.desc()).offset(offset).limit(limit)

@@ -210,7 +210,7 @@ _job_results: dict[str, dict] = {}
 
 
 async def _refund_veo_credits_on_failure(
-    user_id: int | None,
+    user_id: uuid.UUID | None,
     amount: int,
     *,
     meta: dict,
@@ -251,7 +251,7 @@ async def _run_photo_to_video_job(
     camera_movement: str,
     aspect_ratio: str,
     is_1080: bool,
-    charged_user_id: int | None,
+    charged_user_id: uuid.UUID | None,
     veo_cost: int,
     user_email: str,
 ) -> None:
@@ -358,8 +358,22 @@ async def _run_photo_to_video_job(
     title_base = motion_text or (
         "Text to video" if veo_task == "text_to_video" else "Image to video"
     )
-    ue = (user_email or "").strip()
-    if ue and session_factory is not None:
+    ue = (user_email or "").strip().lower()
+    if not ue and charged_user_id is not None and session_factory is not None:
+        _sess = session_factory()
+        try:
+            urow = await _sess.get(User, charged_user_id)
+            if urow is not None and (urow.email or "").strip():
+                ue = urow.email.strip().lower()
+        finally:
+            await _sess.close()
+    if not ue:
+        logger.warning(
+            "photo-to-video job=%s Media Library skip: no owner email "
+            "(empty user_email form and no billed user row)",
+            job_id,
+        )
+    elif session_factory is not None:
         session = session_factory()
         try:
             await media_insert(
@@ -380,7 +394,11 @@ async def _run_photo_to_video_job(
             )
             await session.commit()
         except Exception:
-            logger.warning("photo-to-video job=%s media_insert failed (non-fatal)", job_id, exc_info=True)
+            logger.error(
+                "photo-to-video job=%s media_insert failed",
+                job_id,
+                exc_info=True,
+            )
         finally:
             await session.close()
 
@@ -406,7 +424,7 @@ async def _run_image_to_ad_job(
     form_duration: int,
     aspect_ratio: str,
     is_1080: bool,
-    charged_user_id: int | None,
+    charged_user_id: uuid.UUID | None,
     veo_cost: int,
     user_email: str,
 ) -> None:
@@ -480,8 +498,22 @@ async def _run_image_to_ad_job(
     job_dir_name = video_path.parent.name
     ad_video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
     aw, ah = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
-    ue = (user_email or "").strip()
-    if ue and session_factory is not None:
+    ue = (user_email or "").strip().lower()
+    if not ue and charged_user_id is not None and session_factory is not None:
+        _sess = session_factory()
+        try:
+            urow = await _sess.get(User, charged_user_id)
+            if urow is not None and (urow.email or "").strip():
+                ue = urow.email.strip().lower()
+        finally:
+            await _sess.close()
+    if not ue:
+        logger.warning(
+            "image-to-ad job=%s Media Library skip: no owner email "
+            "(empty user_email form and no billed user row)",
+            job_id,
+        )
+    elif session_factory is not None:
         session = session_factory()
         try:
             await media_insert(
@@ -500,7 +532,11 @@ async def _run_image_to_ad_job(
             )
             await session.commit()
         except Exception:
-            logger.warning("image-to-ad job=%s media_insert failed (non-fatal)", job_id, exc_info=True)
+            logger.error(
+                "image-to-ad job=%s media_insert failed",
+                job_id,
+                exc_info=True,
+            )
         finally:
             await session.close()
 
@@ -848,7 +884,7 @@ async def internal_user_media(
     Next.js API route after verifying the NextAuth session server-side.
     """
     _require_internal_api_key(request, load_settings())
-    email = (request.headers.get("x-user-email") or "").strip()
+    email = (request.headers.get("x-user-email") or "").strip().lower()
     if not email:
         raise HTTPException(status_code=401, detail="Missing user identity")
     if session is None:
