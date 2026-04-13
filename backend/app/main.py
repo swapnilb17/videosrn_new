@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -207,6 +207,304 @@ app.include_router(google_auth_router)
 
 # In-memory tracker for async video jobs (status + result/error)
 _job_results: dict[str, dict] = {}
+
+
+async def _refund_veo_credits_on_failure(
+    user_id: int | None,
+    amount: int,
+    *,
+    meta: dict,
+) -> None:
+    if user_id is None or amount <= 0:
+        return
+    session_factory = getattr(app.state, "session_factory", None)
+    if session_factory is None:
+        logger.warning("veo refund skipped: no DB session factory (user=%s)", user_id)
+        return
+    session = session_factory()
+    try:
+        locked = (
+            await session.execute(select(User).where(User.id == user_id).with_for_update())
+        ).scalar_one()
+        await add_credits(
+            session,
+            locked,
+            amount,
+            reason="refund_veo_failed",
+            meta=meta,
+        )
+        await session.commit()
+    except Exception:
+        logger.warning("veo refund failed user=%s", user_id, exc_info=True)
+    finally:
+        await session.close()
+
+
+async def _run_photo_to_video_job(
+    *,
+    job_id: str,
+    veo_task: Literal["text_to_video", "image_to_video"],
+    image_bytes: bytes | None,
+    end_bytes: bytes | None,
+    motion_text: str,
+    duration: int,
+    camera_movement: str,
+    aspect_ratio: str,
+    is_1080: bool,
+    charged_user_id: int | None,
+    veo_cost: int,
+    user_email: str,
+) -> None:
+    """Background Veo pipeline for /api/photo-to-video (avoids proxy timeouts on long requests)."""
+    from app.services.veo3_video import (
+        _veo_duration_seconds,
+        generate_video_from_image,
+        generate_video_from_prompt,
+        Veo3Error,
+    )
+
+    settings = get_settings()
+    snap_d = _veo_duration_seconds(duration)
+    veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
+    session_factory = getattr(app.state, "session_factory", None)
+
+    async def _fail(msg: str) -> None:
+        await _refund_veo_credits_on_failure(
+            charged_user_id,
+            veo_cost,
+            meta={"stage": "photo-to-video", "job_id": job_id},
+        )
+        _job_results[job_id] = {"job_id": job_id, "status": "failed", "error": msg}
+
+    try:
+        if veo_task == "text_to_video":
+            prompt = motion_text
+            if "cinematic" not in prompt.lower():
+                prompt += " Cinematic, photorealistic, smooth natural motion."
+            video_path = await generate_video_from_prompt(
+                settings,
+                prompt,
+                duration_seconds=duration,
+                aspect_ratio=aspect_ratio,
+                is_1080p=is_1080,
+                veo_artifact_job_id=job_id,
+            )
+        else:
+            assert image_bytes is not None
+            if end_bytes is not None:
+                base = motion_text or (
+                    "Smooth, natural motion transitioning from the first frame to the last frame."
+                )
+                prompt = f"{base} Photorealistic, cinematic quality, coherent transition."
+                video_path = await generate_video_from_image(
+                    settings,
+                    image_bytes,
+                    prompt,
+                    duration_seconds=duration,
+                    aspect_ratio=aspect_ratio,
+                    is_1080p=is_1080,
+                    last_frame_bytes=end_bytes,
+                    veo_artifact_job_id=job_id,
+                )
+            else:
+                camera_desc = {
+                    "pan_left": "smooth camera pan from right to left",
+                    "pan_right": "smooth camera pan from left to right",
+                    "zoom_in": "slow cinematic zoom in towards the subject",
+                    "zoom_out": "slow cinematic zoom out revealing the full scene",
+                    "orbit": "smooth orbital camera movement around the subject",
+                    "dolly": "forward dolly movement towards the subject",
+                    "static": "static camera with subtle ambient motion in the scene",
+                }.get(camera_movement, "gentle camera movement")
+                prompt = f"Bring this photo to life with {camera_desc}."
+                if motion_text:
+                    prompt += f" {motion_text}."
+                prompt += " Photorealistic, cinematic quality, smooth natural motion."
+                video_path = await generate_video_from_image(
+                    settings,
+                    image_bytes,
+                    prompt,
+                    duration_seconds=duration,
+                    aspect_ratio=aspect_ratio,
+                    is_1080p=is_1080,
+                    veo_artifact_job_id=job_id,
+                )
+    except Veo3Error as e:
+        await _fail(str(e))
+        return
+    except Exception as e:
+        logger.exception("photo-to-video job=%s failed: %s", job_id, e)
+        await _fail("Video generation failed")
+        return
+
+    ff = (settings.ffmpeg_path or "").strip()
+    try:
+        overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
+        await _persist_veo3_output_to_s3(settings, video_path)
+    except Exception as e:
+        logger.exception("photo-to-video job=%s postprocess failed: %s", job_id, e)
+        await _fail("Video processing failed")
+        return
+
+    job_dir_name = video_path.parent.name
+    video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
+    pw, ph = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
+    title_base = motion_text or (
+        "Text to video" if veo_task == "text_to_video" else "Image to video"
+    )
+    ue = (user_email or "").strip()
+    if ue and session_factory is not None:
+        session = session_factory()
+        try:
+            await media_insert(
+                session,
+                owner_email=ue,
+                media_type="video",
+                title=title_base[:200],
+                media_url=video_url,
+                source_service="photo-to-video",
+                extra={
+                    "duration": snap_d,
+                    "camera": camera_movement,
+                    "model": veo_model,
+                    "resolution": "1080p" if is_1080 else "720p",
+                    "task": veo_task,
+                    "end_frame": bool(end_bytes),
+                },
+            )
+            await session.commit()
+        except Exception:
+            logger.warning("photo-to-video job=%s media_insert failed (non-fatal)", job_id, exc_info=True)
+        finally:
+            await session.close()
+
+    _job_results[job_id] = {
+        "job_id": job_id,
+        "status": "done",
+        "mp4_url": video_url,
+        "video_url": video_url,
+        "video_width": pw,
+        "video_height": ph,
+        "duration_seconds": snap_d,
+        "model": veo_model,
+    }
+
+
+async def _run_image_to_ad_job(
+    *,
+    job_id: str,
+    image_bytes: bytes,
+    ad_copy_clean: str,
+    cta_text: str,
+    template: str,
+    form_duration: int,
+    aspect_ratio: str,
+    is_1080: bool,
+    charged_user_id: int | None,
+    veo_cost: int,
+    user_email: str,
+) -> None:
+    """Background Veo pipeline for /api/image-to-ad."""
+    from app.services.veo3_video import (
+        _veo_duration_seconds,
+        generate_video_from_image,
+        Veo3Error,
+    )
+
+    settings = get_settings()
+    dur_req = min(int(form_duration), 15)
+    snap_d = _veo_duration_seconds(dur_req)
+    veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
+    session_factory = getattr(app.state, "session_factory", None)
+
+    async def _fail(msg: str) -> None:
+        await _refund_veo_credits_on_failure(
+            charged_user_id,
+            veo_cost,
+            meta={"stage": "image-to-ad", "job_id": job_id},
+        )
+        _job_results[job_id] = {"job_id": job_id, "status": "failed", "error": msg}
+
+    template_desc = {
+        "product_showcase": "cinematic product showcase with dynamic camera angles revealing the product from multiple perspectives",
+        "before_after": "transformation reveal showing the product's impact with a before and after transition",
+        "feature_highlight": "focused feature highlight zooming into key product details one by one",
+        "testimonial": "social proof style presentation with the product as the hero element",
+        "sale_promo": "high-energy promotional video with urgency-driven motion and dynamic transitions",
+    }.get(template, "cinematic product showcase")
+
+    prompt = f"Create a {template_desc} for this product."
+    if ad_copy_clean:
+        prompt += f" The ad message: {ad_copy_clean}."
+    if cta_text:
+        prompt += f" End with a call to action: {cta_text.strip()[:50]}."
+    prompt += " Professional advertising quality, smooth transitions, premium feel."
+
+    try:
+        video_path = await generate_video_from_image(
+            settings,
+            image_bytes,
+            prompt,
+            duration_seconds=dur_req,
+            aspect_ratio=aspect_ratio,
+            is_1080p=is_1080,
+            veo_artifact_job_id=job_id,
+        )
+    except Veo3Error as e:
+        await _fail(str(e))
+        return
+    except Exception as e:
+        logger.exception("image-to-ad job=%s failed: %s", job_id, e)
+        await _fail("Ad video generation failed")
+        return
+
+    ff = (settings.ffmpeg_path or "").strip()
+    try:
+        overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
+        await _persist_veo3_output_to_s3(settings, video_path)
+    except Exception as e:
+        logger.exception("image-to-ad job=%s postprocess failed: %s", job_id, e)
+        await _fail("Ad video processing failed")
+        return
+
+    job_dir_name = video_path.parent.name
+    ad_video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
+    aw, ah = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
+    ue = (user_email or "").strip()
+    if ue and session_factory is not None:
+        session = session_factory()
+        try:
+            await media_insert(
+                session,
+                owner_email=ue,
+                media_type="video",
+                title=(ad_copy_clean or "Image to Ad video")[:200],
+                media_url=ad_video_url,
+                source_service="image-to-ad",
+                extra={
+                    "template": template,
+                    "duration": snap_d,
+                    "model": veo_model,
+                    "resolution": "1080p" if is_1080 else "720p",
+                },
+            )
+            await session.commit()
+        except Exception:
+            logger.warning("image-to-ad job=%s media_insert failed (non-fatal)", job_id, exc_info=True)
+        finally:
+            await session.close()
+
+    _job_results[job_id] = {
+        "job_id": job_id,
+        "status": "done",
+        "mp4_url": ad_video_url,
+        "video_url": ad_video_url,
+        "video_width": aw,
+        "video_height": ah,
+        "duration_seconds": snap_d,
+        "model": veo_model,
+    }
+
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
@@ -634,7 +932,7 @@ async def internal_credits_check_code(
 
 @app.get("/api/jobs/{job_id}/status")
 async def job_status(job_id: str):
-    """Poll for the result of an async /generate job."""
+    """Poll for the result of an async job (topic video, photo-to-video, image-to-ad)."""
     entry = _job_results.get(job_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="Unknown job")
@@ -1738,13 +2036,8 @@ async def api_photo_to_video(
     user_sub: Annotated[str, Form()] = "",
     video_tier: Annotated[str, Form()] = "1080",
 ):
-    """Veo 3.1 Lite: text-to-video, image-to-video, or first+last-frame video."""
-    from app.services.veo3_video import (
-        _veo_duration_seconds,
-        generate_video_from_image,
-        generate_video_from_prompt,
-        Veo3Error,
-    )
+    """Veo 3.1 Lite: text-to-video, image-to-video, or first+last-frame video (async job + poll)."""
+    from app.services.veo3_video import _veo_duration_seconds
 
     settings = get_settings()
     raw_task = (task or "image_to_video").strip().lower().replace("-", "_")
@@ -1832,134 +2125,28 @@ async def api_photo_to_video(
         await session.commit()
         charged_user = locked
 
-    if veo_task == "text_to_video":
-        prompt = motion_text
-        if "cinematic" not in prompt.lower():
-            prompt += " Cinematic, photorealistic, smooth natural motion."
-        gen_coro = generate_video_from_prompt(
-            settings,
-            prompt,
-            duration_seconds=duration,
+    job_id = uuid.uuid4().hex[:12]
+    _job_results[job_id] = {"job_id": job_id, "status": "running"}
+    asyncio.create_task(
+        _run_photo_to_video_job(
+            job_id=job_id,
+            veo_task=veo_task,
+            image_bytes=image_bytes,
+            end_bytes=end_bytes,
+            motion_text=motion_text,
+            duration=duration,
+            camera_movement=camera_movement,
             aspect_ratio=aspect_ratio,
-            is_1080p=is_1080,
+            is_1080=is_1080,
+            charged_user_id=charged_user.id if charged_user is not None else None,
+            veo_cost=veo_cost,
+            user_email=(user_email or "").strip(),
         )
-    else:
-        assert image_bytes is not None
-        if end_bytes is not None:
-            base = motion_text or (
-                "Smooth, natural motion transitioning from the first frame to the last frame."
-            )
-            prompt = f"{base} Photorealistic, cinematic quality, coherent transition."
-            gen_coro = generate_video_from_image(
-                settings,
-                image_bytes,
-                prompt,
-                duration_seconds=duration,
-                aspect_ratio=aspect_ratio,
-                is_1080p=is_1080,
-                last_frame_bytes=end_bytes,
-            )
-        else:
-            camera_desc = {
-                "pan_left": "smooth camera pan from right to left",
-                "pan_right": "smooth camera pan from left to right",
-                "zoom_in": "slow cinematic zoom in towards the subject",
-                "zoom_out": "slow cinematic zoom out revealing the full scene",
-                "orbit": "smooth orbital camera movement around the subject",
-                "dolly": "forward dolly movement towards the subject",
-                "static": "static camera with subtle ambient motion in the scene",
-            }.get(camera_movement, "gentle camera movement")
-            prompt = f"Bring this photo to life with {camera_desc}."
-            if motion_text:
-                prompt += f" {motion_text}."
-            prompt += " Photorealistic, cinematic quality, smooth natural motion."
-            gen_coro = generate_video_from_image(
-                settings,
-                image_bytes,
-                prompt,
-                duration_seconds=duration,
-                aspect_ratio=aspect_ratio,
-                is_1080p=is_1080,
-            )
-
-    try:
-        video_path = await gen_coro
-    except Veo3Error as e:
-        if charged_user is not None and session is not None:
-            try:
-                await session.refresh(charged_user)
-                await add_credits(
-                    session,
-                    charged_user,
-                    veo_cost,
-                    reason="refund_veo_failed",
-                    meta={"stage": "photo-to-video"},
-                )
-                await session.commit()
-            except Exception:
-                logger.warning("veo refund failed", exc_info=True)
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except Exception as e:
-        if charged_user is not None and session is not None:
-            try:
-                await session.refresh(charged_user)
-                await add_credits(
-                    session,
-                    charged_user,
-                    veo_cost,
-                    reason="refund_veo_failed",
-                    meta={"stage": "photo-to-video"},
-                )
-                await session.commit()
-            except Exception:
-                logger.warning("veo refund failed", exc_info=True)
-        logger.exception("photo-to-video failed: %s", e)
-        raise HTTPException(status_code=500, detail="Video generation failed") from e
-
-    # Burn in the same credit overlay as Image to AD for every Veo clip from this route.
-    ff = (settings.ffmpeg_path or "").strip()
-    overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
-
-    await _persist_veo3_output_to_s3(settings, video_path)
-
-    job_dir_name = video_path.parent.name
-    video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
-    veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
-    pw, ph = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
-
-    title_base = motion_text or (
-        "Text to video" if veo_task == "text_to_video" else "Image to video"
     )
-    ue = (user_email or "").strip()
-    if ue and session is not None:
-        try:
-            await media_insert(
-                session,
-                owner_email=ue,
-                media_type="video",
-                title=title_base[:200],
-                media_url=video_url,
-                source_service="photo-to-video",
-                extra={
-                    "duration": snap_d,
-                    "camera": camera_movement,
-                    "model": veo_model,
-                    "resolution": "1080p" if is_1080 else "720p",
-                    "task": veo_task,
-                    "end_frame": bool(end_bytes),
-                },
-            )
-        except Exception:
-            logger.warning("photo-to-video media_insert failed (non-fatal)", exc_info=True)
-
-    return {
-        "job_id": job_dir_name,
-        "video_url": video_url,
-        "duration_seconds": snap_d,
-        "width": pw,
-        "height": ph,
-        "model": veo_model,
-    }
+    return JSONResponse(
+        content={"job_id": job_id, "status": "running"},
+        status_code=202,
+    )
 
 
 @app.post("/api/image-to-ad")
@@ -1977,12 +2164,8 @@ async def api_image_to_ad(
     user_sub: Annotated[str, Form()] = "",
     video_tier: Annotated[str, Form()] = "1080",
 ):
-    """Generate an ad video from a product image using Vertex Veo (default: 3.1 Lite)."""
-    from app.services.veo3_video import (
-        _veo_duration_seconds,
-        generate_video_from_image,
-        Veo3Error,
-    )
+    """Generate an ad video from a product image using Vertex Veo (async job + poll)."""
+    from app.services.veo3_video import _veo_duration_seconds
 
     settings = get_settings()
     ad_copy_clean = (ad_copy or "").strip()
@@ -2037,100 +2220,27 @@ async def api_image_to_ad(
         await session.commit()
         charged_user = locked
 
-    template_desc = {
-        "product_showcase": "cinematic product showcase with dynamic camera angles revealing the product from multiple perspectives",
-        "before_after": "transformation reveal showing the product's impact with a before and after transition",
-        "feature_highlight": "focused feature highlight zooming into key product details one by one",
-        "testimonial": "social proof style presentation with the product as the hero element",
-        "sale_promo": "high-energy promotional video with urgency-driven motion and dynamic transitions",
-    }.get(template, "cinematic product showcase")
-
-    prompt = f"Create a {template_desc} for this product."
-    if ad_copy_clean:
-        prompt += f" The ad message: {ad_copy_clean}."
-    if cta_text:
-        prompt += f" End with a call to action: {cta_text.strip()[:50]}."
-    prompt += " Professional advertising quality, smooth transitions, premium feel."
-
-    try:
-        video_path = await generate_video_from_image(
-            settings,
-            image_bytes,
-            prompt,
-            duration_seconds=dur_req,
+    job_id = uuid.uuid4().hex[:12]
+    _job_results[job_id] = {"job_id": job_id, "status": "running"}
+    asyncio.create_task(
+        _run_image_to_ad_job(
+            job_id=job_id,
+            image_bytes=image_bytes,
+            ad_copy_clean=ad_copy_clean,
+            cta_text=(cta_text or "").strip(),
+            template=template,
+            form_duration=duration,
             aspect_ratio=aspect_ratio,
-            is_1080p=is_1080,
+            is_1080=is_1080,
+            charged_user_id=charged_user.id if charged_user is not None else None,
+            veo_cost=veo_cost,
+            user_email=(user_email or "").strip(),
         )
-    except Veo3Error as e:
-        if charged_user is not None and session is not None:
-            try:
-                await session.refresh(charged_user)
-                await add_credits(
-                    session,
-                    charged_user,
-                    veo_cost,
-                    reason="refund_veo_failed",
-                    meta={"stage": "image-to-ad"},
-                )
-                await session.commit()
-            except Exception:
-                logger.warning("veo refund failed", exc_info=True)
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except Exception as e:
-        if charged_user is not None and session is not None:
-            try:
-                await session.refresh(charged_user)
-                await add_credits(
-                    session,
-                    charged_user,
-                    veo_cost,
-                    reason="refund_veo_failed",
-                    meta={"stage": "image-to-ad"},
-                )
-                await session.commit()
-            except Exception:
-                logger.warning("veo refund failed", exc_info=True)
-        logger.exception("image-to-ad failed: %s", e)
-        raise HTTPException(status_code=500, detail="Ad video generation failed") from e
-
-    ff = (settings.ffmpeg_path or "").strip()
-    overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
-
-    await _persist_veo3_output_to_s3(settings, video_path)
-
-    job_dir_name = video_path.parent.name
-    ad_video_url = f"/media/veo3/{job_dir_name}/{video_path.name}"
-    veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
-    aw, ah = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
-
-    ue = (user_email or "").strip()
-    if ue and session is not None:
-        try:
-            await media_insert(
-                session,
-                owner_email=ue,
-                media_type="video",
-                title=(ad_copy_clean or "Image to Ad video")[:200],
-                media_url=ad_video_url,
-                source_service="image-to-ad",
-                extra={
-                    "template": template,
-                    "duration": duration,
-                    "model": veo_model,
-                    "resolution": "1080p" if is_1080 else "720p",
-                },
-            )
-        except Exception:
-            logger.warning("image-to-ad media_insert failed (non-fatal)", exc_info=True)
-
-    return {
-        "job_id": job_dir_name,
-        "video_url": ad_video_url,
-        "duration_seconds": duration,
-        "width": aw,
-        "height": ah,
-        "model": veo_model,
-    }
+    )
+    return JSONResponse(
+        content={"job_id": job_id, "status": "running"},
+        status_code=202,
+    )
 
 
 @app.post("/api/generate-voice")

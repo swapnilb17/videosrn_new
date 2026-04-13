@@ -87,6 +87,15 @@ def _veo_person_generation(settings: Settings) -> str:
     return "allow_adult"
 
 
+def _resolve_veo_artifact_job_id(explicit: str | None) -> str:
+    """Use caller-supplied 12-hex id (for async job polling) or allocate a new one."""
+    if explicit:
+        e = explicit.strip().lower()
+        if len(e) == 12 and all(c in "0123456789abcdef" for c in e):
+            return e
+    return uuid.uuid4().hex[:12]
+
+
 def _veo_storage_prefix(settings: Settings, job_id: str) -> str:
     raw = (settings.vertex_veo_storage_uri or "").strip()
     if not raw:
@@ -325,6 +334,7 @@ async def generate_video_from_image(
     aspect_ratio: str = "16:9",
     is_1080p: bool = True,
     last_frame_bytes: bytes | None = None,
+    veo_artifact_job_id: str | None = None,
 ) -> Path:
     """Generate a video from a start image + prompt using Veo on Vertex AI.
 
@@ -340,7 +350,7 @@ async def generate_video_from_image(
     model_id = _veo_model(settings)
     token = await _get_token(settings)
 
-    job_id = uuid.uuid4().hex[:12]
+    job_id = _resolve_veo_artifact_job_id(veo_artifact_job_id)
     storage_uri = _veo_storage_prefix(settings, job_id)
     output_dir = settings.artifact_root / f"veo3_{job_id}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -425,6 +435,7 @@ async def generate_video_from_prompt(
     duration_seconds: int = 8,
     aspect_ratio: str = "16:9",
     is_1080p: bool = True,
+    veo_artifact_job_id: str | None = None,
 ) -> Path:
     """Generate a video from text prompt only (no source image) using Veo."""
     project = (settings.vertex_imagen_project_id or "").strip()
@@ -435,7 +446,7 @@ async def generate_video_from_prompt(
     model_id = _veo_model(settings)
     token = await _get_token(settings)
 
-    job_id = uuid.uuid4().hex[:12]
+    job_id = _resolve_veo_artifact_job_id(veo_artifact_job_id)
     storage_uri = _veo_storage_prefix(settings, job_id)
     output_dir = settings.artifact_root / f"veo3_{job_id}"
     output_dir.mkdir(parents=True, exist_ok=True)

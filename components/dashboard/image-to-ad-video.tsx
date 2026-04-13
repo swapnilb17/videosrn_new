@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import {
   Megaphone,
   Upload,
@@ -15,6 +16,7 @@ import {
   Loader2,
   LayoutTemplate,
   Gauge,
+  GalleryHorizontalEnd,
 } from "lucide-react";
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
@@ -22,9 +24,12 @@ import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
 import { downloadUrlAsFile, resolveMediaFilename } from "@/lib/client-download";
 import {
+  ApiError,
   appendCreditIdentity,
-  imageToAdVideo,
+  pollJobStatus,
+  submitImageToAdVideoJob,
   type ImageToAdResponse,
+  type JobStatusResponse,
 } from "@/lib/api";
 
 const AD_TEMPLATES = [
@@ -56,6 +61,28 @@ const VIDEO_TIERS = [
 const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
 
+const LONG_WAIT_HINT_AFTER_MS = 90_000;
+
+function isGatewayOrNetworkFailure(e: unknown): boolean {
+  if (e instanceof ApiError && e.status === 524) return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/524|gateway timeout|timeout/i.test(msg)) return true;
+  if (e instanceof TypeError) return true;
+  return false;
+}
+
+function statusToImageAdResult(s: JobStatusResponse): ImageToAdResponse {
+  const url = s.video_url ?? s.mp4_url ?? "";
+  return {
+    job_id: s.job_id,
+    video_url: url,
+    duration_seconds: s.duration_seconds ?? 8,
+    width: s.video_width ?? 1080,
+    height: s.video_height ?? 1920,
+    model: s.model ?? "",
+  };
+}
+
 export function ImageToAdVideo() {
   const { userEmail, userId } = useAuth();
   const productRef = useRef<HTMLInputElement>(null);
@@ -74,6 +101,17 @@ export function ImageToAdVideo() {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImageToAdResponse | null>(null);
+  const [longWaitHint, setLongWaitHint] = useState(false);
+  const [connectionHint, setConnectionHint] = useState(false);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const longWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      if (longWaitTimerRef.current) clearTimeout(longWaitTimerRef.current);
+    };
+  }, []);
 
   async function handleDownloadVideo() {
     if (!result?.video_url) return;
@@ -102,6 +140,16 @@ export function ImageToAdVideo() {
     setGenerating(true);
     setError(null);
     setResult(null);
+    setLongWaitHint(false);
+    setConnectionHint(false);
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+    if (longWaitTimerRef.current) {
+      clearTimeout(longWaitTimerRef.current);
+      longWaitTimerRef.current = null;
+    }
 
     const fd = new FormData();
     fd.append("product_image", productImage);
@@ -116,11 +164,55 @@ export function ImageToAdVideo() {
     appendCreditIdentity(fd, userEmail, userId);
 
     try {
-      const res = await imageToAdVideo(fd);
-      setResult(res);
+      const { job_id } = await submitImageToAdVideoJob(fd);
+
+      longWaitTimerRef.current = setTimeout(() => {
+        longWaitTimerRef.current = null;
+        setLongWaitHint(true);
+      }, LONG_WAIT_HINT_AFTER_MS);
+
+      pollingRef.current = setInterval(() => {
+        void (async () => {
+          try {
+            const status = await pollJobStatus(job_id);
+            if (status.status === "done") {
+              if (pollingRef.current) clearInterval(pollingRef.current);
+              pollingRef.current = null;
+              if (longWaitTimerRef.current) {
+                clearTimeout(longWaitTimerRef.current);
+                longWaitTimerRef.current = null;
+              }
+              setLongWaitHint(false);
+              setResult(statusToImageAdResult(status));
+              setGenerating(false);
+            } else if (status.status === "failed") {
+              if (pollingRef.current) clearInterval(pollingRef.current);
+              pollingRef.current = null;
+              if (longWaitTimerRef.current) {
+                clearTimeout(longWaitTimerRef.current);
+                longWaitTimerRef.current = null;
+              }
+              setLongWaitHint(false);
+              setError(status.error || "Generation failed");
+              setGenerating(false);
+            }
+          } catch {
+            /* transient poll failure — keep trying */
+          }
+        })();
+      }, 4000);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Ad video generation failed");
-    } finally {
+      if (longWaitTimerRef.current) {
+        clearTimeout(longWaitTimerRef.current);
+        longWaitTimerRef.current = null;
+      }
+      setLongWaitHint(false);
+      if (isGatewayOrNetworkFailure(e)) {
+        setConnectionHint(true);
+        setError(null);
+      } else {
+        setError(e instanceof Error ? e.message : "Ad video generation failed");
+      }
       setGenerating(false);
     }
   }
@@ -326,7 +418,7 @@ export function ImageToAdVideo() {
           {/* Generate button */}
           <ClayButton
             className="w-full"
-            onClick={handleGenerate}
+            onClick={() => void handleGenerate()}
             disabled={generating || !productImage}
           >
             {generating ? (
@@ -351,7 +443,7 @@ export function ImageToAdVideo() {
           </h2>
 
           {/* Before generation */}
-          {!generating && !result && !error && (
+          {!generating && !result && !error && !connectionHint && (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-gradient-to-br from-pink-500/10 via-purple-500/5 to-rose-400/5 p-12 text-center min-h-[300px]">
               <Megaphone className="h-16 w-16 text-slate-500 mb-4" />
               <p className="text-slate-400 text-sm max-w-xs">
@@ -368,6 +460,52 @@ export function ImageToAdVideo() {
               <p className="text-slate-500 text-xs mt-1">
                 This may take 2-5 minutes.
               </p>
+              {longWaitHint && (
+                <div className="mt-6 max-w-sm rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-left">
+                  <p className="text-sm text-amber-100/90">
+                    Video generation is taking longer than usual. You can keep this page open, or
+                    check your{" "}
+                    <Link
+                      href="/dashboard/media"
+                      className="font-medium text-amber-200 underline underline-offset-2 hover:text-white"
+                    >
+                      Media Library
+                    </Link>{" "}
+                    in the next few minutes — your video will appear there when it is ready.
+                  </p>
+                  <Link
+                    href="/dashboard/media"
+                    className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-amber-200/90 hover:text-white"
+                  >
+                    <GalleryHorizontalEnd className="h-3.5 w-3.5" />
+                    Open Media Library
+                  </Link>
+                </div>
+              )}
+            </div>
+          )}
+
+          {connectionHint && (
+            <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 p-6 text-center">
+              <p className="mb-2 font-medium text-amber-100/90">Connection interrupted</p>
+              <p className="text-sm text-amber-100/80">
+                Your request may still be processing. Wait a few minutes, then check your{" "}
+                <Link
+                  href="/dashboard/media"
+                  className="font-medium text-amber-200 underline underline-offset-2 hover:text-white"
+                >
+                  Media Library
+                </Link>{" "}
+                for the finished video.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-4 border-amber-400/40 text-amber-100 hover:bg-amber-500/20"
+                onClick={() => setConnectionHint(false)}
+              >
+                Dismiss
+              </Button>
             </div>
           )}
 
@@ -376,6 +514,13 @@ export function ImageToAdVideo() {
             <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-6 text-center">
               <p className="text-red-400 font-medium mb-1">Generation Failed</p>
               <p className="text-sm text-red-300/80">{error}</p>
+              <p className="mt-3 text-xs text-slate-500">
+                If you were charged credits but do not see a video, check your{" "}
+                <Link href="/dashboard/media" className="text-slate-400 underline hover:text-white">
+                  Media Library
+                </Link>{" "}
+                or try again.
+              </p>
               <Button
                 variant="outline"
                 size="sm"

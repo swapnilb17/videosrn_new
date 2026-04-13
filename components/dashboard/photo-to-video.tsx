@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import {
   Upload,
   X,
@@ -13,13 +14,21 @@ import {
   Monitor,
   Clapperboard,
   ImageIcon,
+  GalleryHorizontalEnd,
 } from "lucide-react";
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
 import { downloadUrlAsFile, resolveMediaFilename } from "@/lib/client-download";
-import { appendCreditIdentity, photoToVideo, type PhotoToVideoResponse } from "@/lib/api";
+import {
+  ApiError,
+  appendCreditIdentity,
+  pollJobStatus,
+  submitPhotoToVideoJob,
+  type JobStatusResponse,
+  type PhotoToVideoResponse,
+} from "@/lib/api";
 
 const DURATIONS = [
   { value: 4, label: "4s" },
@@ -59,6 +68,28 @@ const INPUT_CLS =
 const FRAME_BOX =
   "flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-white/15 bg-[#0d1020] px-3 py-8 text-center transition hover:border-blue-400/40";
 
+const LONG_WAIT_HINT_AFTER_MS = 90_000;
+
+function isGatewayOrNetworkFailure(e: unknown): boolean {
+  if (e instanceof ApiError && e.status === 524) return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/524|gateway timeout|timeout/i.test(msg)) return true;
+  if (e instanceof TypeError) return true;
+  return false;
+}
+
+function statusToPhotoResult(s: JobStatusResponse): PhotoToVideoResponse {
+  const url = s.video_url ?? s.mp4_url ?? "";
+  return {
+    job_id: s.job_id,
+    video_url: url,
+    duration_seconds: s.duration_seconds ?? 8,
+    width: s.video_width ?? 1280,
+    height: s.video_height ?? 720,
+    model: s.model ?? "",
+  };
+}
+
 export function PhotoToVideo() {
   const { userEmail, userId } = useAuth();
   const startRef = useRef<HTMLInputElement>(null);
@@ -77,6 +108,17 @@ export function PhotoToVideo() {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PhotoToVideoResponse | null>(null);
+  const [longWaitHint, setLongWaitHint] = useState(false);
+  const [connectionHint, setConnectionHint] = useState(false);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const longWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      if (longWaitTimerRef.current) clearTimeout(longWaitTimerRef.current);
+    };
+  }, []);
 
   const hasEndFrame = Boolean(endFrame);
   const imageMode = task === "image_to_video";
@@ -118,6 +160,16 @@ export function PhotoToVideo() {
     setGenerating(true);
     setError(null);
     setResult(null);
+    setLongWaitHint(false);
+    setConnectionHint(false);
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+    if (longWaitTimerRef.current) {
+      clearTimeout(longWaitTimerRef.current);
+      longWaitTimerRef.current = null;
+    }
 
     const fd = new FormData();
     fd.append("task", task);
@@ -131,11 +183,55 @@ export function PhotoToVideo() {
     appendCreditIdentity(fd, userEmail, userId);
 
     try {
-      const res = await photoToVideo(fd);
-      setResult(res);
+      const { job_id } = await submitPhotoToVideoJob(fd);
+
+      longWaitTimerRef.current = setTimeout(() => {
+        longWaitTimerRef.current = null;
+        setLongWaitHint(true);
+      }, LONG_WAIT_HINT_AFTER_MS);
+
+      pollingRef.current = setInterval(() => {
+        void (async () => {
+          try {
+            const status = await pollJobStatus(job_id);
+            if (status.status === "done") {
+              if (pollingRef.current) clearInterval(pollingRef.current);
+              pollingRef.current = null;
+              if (longWaitTimerRef.current) {
+                clearTimeout(longWaitTimerRef.current);
+                longWaitTimerRef.current = null;
+              }
+              setLongWaitHint(false);
+              setResult(statusToPhotoResult(status));
+              setGenerating(false);
+            } else if (status.status === "failed") {
+              if (pollingRef.current) clearInterval(pollingRef.current);
+              pollingRef.current = null;
+              if (longWaitTimerRef.current) {
+                clearTimeout(longWaitTimerRef.current);
+                longWaitTimerRef.current = null;
+              }
+              setLongWaitHint(false);
+              setError(status.error || "Generation failed");
+              setGenerating(false);
+            }
+          } catch {
+            /* transient poll failure — keep trying */
+          }
+        })();
+      }, 4000);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Video generation failed");
-    } finally {
+      if (longWaitTimerRef.current) {
+        clearTimeout(longWaitTimerRef.current);
+        longWaitTimerRef.current = null;
+      }
+      setLongWaitHint(false);
+      if (isGatewayOrNetworkFailure(e)) {
+        setConnectionHint(true);
+        setError(null);
+      } else {
+        setError(e instanceof Error ? e.message : "Video generation failed");
+      }
       setGenerating(false);
     }
   }
@@ -369,7 +465,7 @@ export function PhotoToVideo() {
             Preview
           </h2>
 
-          {!generating && !result && !error && (
+          {!generating && !result && !error && !connectionHint && (
             <div className="flex min-h-[300px] flex-col items-center justify-center rounded-2xl border border-white/10 bg-gradient-to-br from-blue-500/10 via-cyan-500/5 to-purple-400/5 p-12 text-center">
               <Clapperboard className="mb-4 h-16 w-16 text-slate-500" />
               <p className="max-w-xs text-sm text-slate-400">
@@ -384,7 +480,53 @@ export function PhotoToVideo() {
             <div className="flex min-h-[300px] flex-col items-center justify-center rounded-2xl border border-white/10 bg-gradient-to-br from-blue-500/10 via-cyan-500/5 to-purple-400/5 p-12 text-center">
               <Loader2 className="mb-4 h-12 w-12 animate-spin text-blue-400" />
               <p className="font-medium text-slate-300">Creating your video with Veo…</p>
-              <p className="mt-1 text-xs text-slate-500">Often 1–3 minutes.</p>
+              <p className="mt-1 text-xs text-slate-500">Often 2–5 minutes.</p>
+              {longWaitHint && (
+                <div className="mt-6 max-w-sm rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-left">
+                  <p className="text-sm text-amber-100/90">
+                    Video generation is taking longer than usual. You can keep this page open, or
+                    check your{" "}
+                    <Link
+                      href="/dashboard/media"
+                      className="font-medium text-amber-200 underline underline-offset-2 hover:text-white"
+                    >
+                      Media Library
+                    </Link>{" "}
+                    in the next few minutes — your video will appear there when it is ready.
+                  </p>
+                  <Link
+                    href="/dashboard/media"
+                    className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-amber-200/90 hover:text-white"
+                  >
+                    <GalleryHorizontalEnd className="h-3.5 w-3.5" />
+                    Open Media Library
+                  </Link>
+                </div>
+              )}
+            </div>
+          )}
+
+          {connectionHint && (
+            <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 p-6 text-center">
+              <p className="mb-2 font-medium text-amber-100/90">Connection interrupted</p>
+              <p className="text-sm text-amber-100/80">
+                Your request may still be processing. Wait a few minutes, then check your{" "}
+                <Link
+                  href="/dashboard/media"
+                  className="font-medium text-amber-200 underline underline-offset-2 hover:text-white"
+                >
+                  Media Library
+                </Link>{" "}
+                for the finished video.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-4 border-amber-400/40 text-amber-100 hover:bg-amber-500/20"
+                onClick={() => setConnectionHint(false)}
+              >
+                Dismiss
+              </Button>
             </div>
           )}
 
@@ -392,6 +534,13 @@ export function PhotoToVideo() {
             <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-6 text-center">
               <p className="mb-1 font-medium text-red-400">Generation failed</p>
               <p className="text-sm text-red-300/80">{error}</p>
+              <p className="mt-3 text-xs text-slate-500">
+                If you were charged credits but do not see a video, check your{" "}
+                <Link href="/dashboard/media" className="text-slate-400 underline hover:text-white">
+                  Media Library
+                </Link>{" "}
+                or try again.
+              </p>
               <Button
                 variant="outline"
                 size="sm"

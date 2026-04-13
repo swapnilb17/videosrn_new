@@ -80,8 +80,12 @@ export type JobStatusResponse = {
   error?: string;
   mp3_url?: string;
   mp4_url?: string;
+  /** Veo standalone routes (photo-to-video, image-to-ad) mirror mp4_url for convenience. */
+  video_url?: string;
   video_width?: number;
   video_height?: number;
+  duration_seconds?: number;
+  model?: string;
   tts_provider?: string;
   visual_mode?: string;
 };
@@ -233,9 +237,20 @@ export type PhotoToVideoResponse = {
   model: string;
 };
 
-export async function photoToVideo(fd: FormData): Promise<PhotoToVideoResponse> {
-  const res = await fetch("/api/photo-to-video", { method: "POST", body: fd, credentials: "include" });
-  return handleResponse<PhotoToVideoResponse>(res);
+export type AsyncVeoJobAccepted = { job_id: string; status: string };
+
+export async function submitPhotoToVideoJob(
+  fd: FormData,
+): Promise<AsyncVeoJobAccepted> {
+  const res = await fetch("/api/photo-to-video", {
+    method: "POST",
+    body: fd,
+    credentials: "include",
+  });
+  if (res.status === 202) {
+    return res.json() as Promise<AsyncVeoJobAccepted>;
+  }
+  return handleResponse<AsyncVeoJobAccepted>(res);
 }
 
 export type ImageToAdResponse = {
@@ -247,9 +262,18 @@ export type ImageToAdResponse = {
   model: string;
 };
 
-export async function imageToAdVideo(fd: FormData): Promise<ImageToAdResponse> {
-  const res = await fetch("/api/image-to-ad", { method: "POST", body: fd, credentials: "include" });
-  return handleResponse<ImageToAdResponse>(res);
+export async function submitImageToAdVideoJob(
+  fd: FormData,
+): Promise<AsyncVeoJobAccepted> {
+  const res = await fetch("/api/image-to-ad", {
+    method: "POST",
+    body: fd,
+    credentials: "include",
+  });
+  if (res.status === 202) {
+    return res.json() as Promise<AsyncVeoJobAccepted>;
+  }
+  return handleResponse<AsyncVeoJobAccepted>(res);
 }
 
 // ---------------------------------------------------------------------------
