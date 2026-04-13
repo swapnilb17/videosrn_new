@@ -18,7 +18,7 @@ function serviceLabel(s: string) {
     "topic-to-video": "Topic to Video",
     "text-to-image": "Text to Image",
     "text-to-voice": "Text to Voice",
-    "photo-to-video": "Photo to Video",
+    "photo-to-video": "Image to Video",
     "image-to-ad": "Image to Ad",
   };
   return map[s] ?? s;

@@ -1719,7 +1719,9 @@ async def api_generate_image(
 @app.post("/api/photo-to-video")
 async def api_photo_to_video(
     session: Annotated[AsyncSession | None, Depends(get_db_session)],
-    photo: Annotated[UploadFile, File()],
+    task: Annotated[str, Form()] = "image_to_video",
+    photo: Annotated[UploadFile | None, File()] = None,
+    end_photo: Annotated[UploadFile | None, File()] = None,
     motion_prompt: Annotated[str, Form()] = "",
     duration: Annotated[int, Form()] = 8,
     camera_movement: Annotated[str, Form()] = "zoom_in",
@@ -1728,17 +1730,42 @@ async def api_photo_to_video(
     user_sub: Annotated[str, Form()] = "",
     video_tier: Annotated[str, Form()] = "1080",
 ):
-    """Generate video from a photo using Vertex Veo (default: 3.1 Lite)."""
+    """Veo 3.1 Lite: text-to-video, image-to-video, or first+last-frame video."""
     from app.services.veo3_video import (
         _veo_duration_seconds,
         generate_video_from_image,
+        generate_video_from_prompt,
         Veo3Error,
     )
 
     settings = get_settings()
-    image_bytes = await photo.read()
-    if len(image_bytes) < 100:
-        raise HTTPException(status_code=422, detail="Photo file is empty or too small")
+    raw_task = (task or "image_to_video").strip().lower().replace("-", "_")
+    if raw_task in ("text", "text_to_video"):
+        veo_task = "text_to_video"
+    elif raw_task in ("image", "image_to_video", "photo", "photo_to_video"):
+        veo_task = "image_to_video"
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="task must be text_to_video or image_to_video",
+        )
+
+    motion_text = (motion_prompt or "").strip()
+    if veo_task == "text_to_video" and len(motion_text) < 3:
+        raise HTTPException(status_code=422, detail="Enter a prompt for text-to-video")
+
+    image_bytes: bytes | None = None
+    end_bytes: bytes | None = None
+    if veo_task == "image_to_video":
+        if photo is None:
+            raise HTTPException(status_code=422, detail="Start frame image is required")
+        image_bytes = await photo.read()
+        if len(image_bytes) < 100:
+            raise HTTPException(status_code=422, detail="Start frame file is empty or too small")
+        if end_photo is not None:
+            end_raw = await end_photo.read()
+            if len(end_raw) >= 100:
+                end_bytes = end_raw
 
     snap_d = _veo_duration_seconds(duration)
     is_1080 = (video_tier or "1080").strip().lower() != "720"
@@ -1764,13 +1791,25 @@ async def api_photo_to_video(
         locked = (
             await session.execute(select(User).where(User.id == cu.id).with_for_update())
         ).scalar_one()
+        debit_reason = (
+            "veo_text_to_video"
+            if veo_task == "text_to_video"
+            else "veo_frame_to_video"
+            if end_bytes
+            else "veo_photo_to_video"
+        )
         try:
             await deduct_credits(
                 session,
                 locked,
                 veo_cost,
-                reason="veo_photo_to_video",
-                meta={"duration_sec": snap_d, "tier": "1080" if is_1080 else "720"},
+                reason=debit_reason,
+                meta={
+                    "duration_sec": snap_d,
+                    "tier": "1080" if is_1080 else "720",
+                    "task": veo_task,
+                    "end_frame": bool(end_bytes),
+                },
             )
         except InsufficientCreditsError as e:
             raise HTTPException(
@@ -1780,31 +1819,58 @@ async def api_photo_to_video(
         await session.commit()
         charged_user = locked
 
-    camera_desc = {
-        "pan_left": "smooth camera pan from right to left",
-        "pan_right": "smooth camera pan from left to right",
-        "zoom_in": "slow cinematic zoom in towards the subject",
-        "zoom_out": "slow cinematic zoom out revealing the full scene",
-        "orbit": "smooth orbital camera movement around the subject",
-        "dolly": "forward dolly movement towards the subject",
-        "static": "static camera with subtle ambient motion in the scene",
-    }.get(camera_movement, "gentle camera movement")
-
-    motion_text = (motion_prompt or "").strip()
-    prompt = f"Bring this photo to life with {camera_desc}."
-    if motion_text:
-        prompt += f" {motion_text}."
-    prompt += " Photorealistic, cinematic quality, smooth natural motion."
-
-    try:
-        video_path = await generate_video_from_image(
+    if veo_task == "text_to_video":
+        prompt = motion_text
+        if "cinematic" not in prompt.lower():
+            prompt += " Cinematic, photorealistic, smooth natural motion."
+        gen_coro = generate_video_from_prompt(
             settings,
-            image_bytes,
             prompt,
             duration_seconds=duration,
             aspect_ratio=aspect_ratio,
             is_1080p=is_1080,
         )
+    else:
+        assert image_bytes is not None
+        if end_bytes is not None:
+            base = motion_text or (
+                "Smooth, natural motion transitioning from the first frame to the last frame."
+            )
+            prompt = f"{base} Photorealistic, cinematic quality, coherent transition."
+            gen_coro = generate_video_from_image(
+                settings,
+                image_bytes,
+                prompt,
+                duration_seconds=duration,
+                aspect_ratio=aspect_ratio,
+                is_1080p=is_1080,
+                last_frame_bytes=end_bytes,
+            )
+        else:
+            camera_desc = {
+                "pan_left": "smooth camera pan from right to left",
+                "pan_right": "smooth camera pan from left to right",
+                "zoom_in": "slow cinematic zoom in towards the subject",
+                "zoom_out": "slow cinematic zoom out revealing the full scene",
+                "orbit": "smooth orbital camera movement around the subject",
+                "dolly": "forward dolly movement towards the subject",
+                "static": "static camera with subtle ambient motion in the scene",
+            }.get(camera_movement, "gentle camera movement")
+            prompt = f"Bring this photo to life with {camera_desc}."
+            if motion_text:
+                prompt += f" {motion_text}."
+            prompt += " Photorealistic, cinematic quality, smooth natural motion."
+            gen_coro = generate_video_from_image(
+                settings,
+                image_bytes,
+                prompt,
+                duration_seconds=duration,
+                aspect_ratio=aspect_ratio,
+                is_1080p=is_1080,
+            )
+
+    try:
+        video_path = await gen_coro
     except Veo3Error as e:
         if charged_user is not None and session is not None:
             try:
@@ -1844,6 +1910,9 @@ async def api_photo_to_video(
     veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
     pw, ph = _veo_preview_dimensions(aspect_ratio, is_1080p=is_1080)
 
+    title_base = motion_text or (
+        "Text to video" if veo_task == "text_to_video" else "Image to video"
+    )
     ue = (user_email or "").strip()
     if ue and session is not None:
         try:
@@ -1851,14 +1920,16 @@ async def api_photo_to_video(
                 session,
                 owner_email=ue,
                 media_type="video",
-                title=(motion_prompt or "Photo to video")[:200],
+                title=title_base[:200],
                 media_url=video_url,
                 source_service="photo-to-video",
                 extra={
-                    "duration": duration,
+                    "duration": snap_d,
                     "camera": camera_movement,
                     "model": veo_model,
                     "resolution": "1080p" if is_1080 else "720p",
+                    "task": veo_task,
+                    "end_frame": bool(end_bytes),
                 },
             )
         except Exception:
@@ -1867,7 +1938,7 @@ async def api_photo_to_video(
     return {
         "job_id": job_dir_name,
         "video_url": video_url,
-        "duration_seconds": duration,
+        "duration_seconds": snap_d,
         "width": pw,
         "height": ph,
         "model": veo_model,

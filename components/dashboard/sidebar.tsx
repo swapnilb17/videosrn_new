@@ -27,7 +27,7 @@ const serviceLinks = [
   { service: "topic-to-video", label: "Topic to Video", icon: Film },
   { service: "text-to-image", label: "Text to Image", icon: ImageIcon },
   { service: "text-to-voice", label: "Text to Voice", icon: Mic },
-  { service: "photo-to-video", label: "Photo to Video", icon: Clapperboard },
+  { service: "photo-to-video", label: "Image to Video", icon: Clapperboard },
   { service: "image-to-ad", label: "Image to AD Video", icon: Megaphone },
 ];
 

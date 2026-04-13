@@ -324,8 +324,14 @@ async def generate_video_from_image(
     duration_seconds: int = 8,
     aspect_ratio: str = "16:9",
     is_1080p: bool = True,
+    last_frame_bytes: bytes | None = None,
 ) -> Path:
-    """Generate a video from an image + prompt using Veo on Vertex AI."""
+    """Generate a video from a start image + prompt using Veo on Vertex AI.
+
+    If ``last_frame_bytes`` is set, requests **first-and-last-frame** generation: Veo
+    interpolates motion between the two keyframes (see Vertex “Generate videos from
+    first and last frames”). Inline bytes use the same shape as single image-to-video.
+    """
     project = (settings.vertex_imagen_project_id or "").strip()
     if not project:
         raise Veo3Error("VERTEX_IMAGEN_PROJECT is not set")
@@ -344,26 +350,34 @@ async def generate_video_from_image(
     duration = _veo_duration_seconds(duration_seconds)
     mime_type = _guess_image_mime(image_bytes)
 
-    body: dict[str, Any] = {
-        "instances": [
-            {
-                "prompt": prompt,
-                "image": {
-                    "bytesBase64Encoded": image_b64,
-                    "mimeType": mime_type,
-                },
-            }
-        ],
-        "parameters": {
-            "aspectRatio": aspect_ratio,
-            "resolution": _veo_resolution(is_1080p=is_1080p),
-            "sampleCount": 1,
-            "durationSeconds": duration,
-            "storageUri": storage_uri,
-            "resizeMode": "pad",
-            "personGeneration": _veo_person_generation(settings),
+    instance: dict[str, Any] = {
+        "prompt": prompt,
+        "image": {
+            "bytesBase64Encoded": image_b64,
+            "mimeType": mime_type,
         },
     }
+    if last_frame_bytes is not None and len(last_frame_bytes) >= 100:
+        instance["lastFrame"] = {
+            "bytesBase64Encoded": base64.b64encode(last_frame_bytes).decode("ascii"),
+            "mimeType": _guess_image_mime(last_frame_bytes),
+        }
+
+    parameters: dict[str, Any] = {
+        "aspectRatio": aspect_ratio,
+        "resolution": _veo_resolution(is_1080p=is_1080p),
+        "sampleCount": 1,
+        "durationSeconds": duration,
+        "storageUri": storage_uri,
+        "personGeneration": _veo_person_generation(settings),
+    }
+    # Single reference image: pad to aspect. First+last frame mode typically omits this.
+    if "lastFrame" not in instance:
+        parameters["resizeMode"] = "pad"
+
+    body: dict[str, Any] = {"instances": [instance], "parameters": parameters}
+
+    log_label = "frame-to-video" if "lastFrame" in instance else "image-to-video"
 
     timeout = httpx.Timeout(60.0, read=300.0)
     async with httpx.AsyncClient(timeout=timeout) as http_client:
@@ -391,7 +405,7 @@ async def generate_video_from_image(
         if not operation_name:
             raise Veo3Error("Veo response missing operation name")
 
-        logger.info("Veo image-to-video operation started: %s", operation_name)
+        logger.info("Veo %s operation started: %s", log_label, operation_name)
         return await _await_veo_operation(
             client=http_client,
             settings=settings,
@@ -400,7 +414,7 @@ async def generate_video_from_image(
             model_id=model_id,
             operation_name=operation_name,
             out_path=out_path,
-            log_label="image-to-video",
+            log_label=log_label,
         )
 
 
