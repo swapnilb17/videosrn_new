@@ -1916,10 +1916,9 @@ async def api_photo_to_video(
         logger.exception("photo-to-video failed: %s", e)
         raise HTTPException(status_code=500, detail="Video generation failed") from e
 
-    # First+last-frame (frame-to-video) outputs get the same burned-in credit as image-to-ad.
-    if veo_task == "image_to_video" and end_bytes:
-        ff = (settings.ffmpeg_path or "").strip()
-        overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
+    # Burn in the same credit overlay as Image to AD for every Veo clip from this route.
+    ff = (settings.ffmpeg_path or "").strip()
+    overlay_frame_watermark_on_mp4(video_path, ffmpeg_explicit=ff)
 
     await _persist_veo3_output_to_s3(settings, video_path)
 
