@@ -6,6 +6,8 @@ import {
 } from "@/lib/internal-backend";
 import { NextRequest, NextResponse } from "next/server";
 
+const BACKEND_FETCH_MS = 90_000;
+
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) {
@@ -21,15 +23,28 @@ export async function POST(request: NextRequest) {
 
   const sub = (session.user as { id?: string }).id;
 
-  const res = await fetch(`${INTERNAL_BACKEND_URL}/internal/credits/redeem`, {
-    method: "POST",
-    headers: internalBackendHeaders({
-      "Content-Type": "application/json",
-      "x-user-email": session.user.email,
-      ...(sub ? { "x-user-sub": sub } : {}),
-    }),
-    body: JSON.stringify({ code: body.code ?? "" }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${INTERNAL_BACKEND_URL}/internal/credits/redeem`, {
+      method: "POST",
+      headers: internalBackendHeaders({
+        "Content-Type": "application/json",
+        "x-user-email": session.user.email,
+        ...(sub ? { "x-user-sub": sub } : {}),
+      }),
+      body: JSON.stringify({ code: body.code ?? "" }),
+      signal: AbortSignal.timeout(BACKEND_FETCH_MS),
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const timedOut =
+      e instanceof Error &&
+      (e.name === "TimeoutError" || e.name === "AbortError");
+    return NextResponse.json(
+      { detail: timedOut ? "Redeem timed out — try again." : msg },
+      { status: timedOut ? 504 : 502 },
+    );
+  }
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

@@ -67,7 +67,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
         } catch {
           setCreditsInfo(null);
-          setCreditsError("Invalid response from credits API");
+          const hint = text.trim().slice(0, 120);
+          setCreditsError(
+            hint
+              ? `Invalid response from credits API (non-JSON): ${hint}`
+              : "Invalid response from credits API (empty body — proxy or origin error)",
+          );
           setCreditsLoading(false);
           return;
         }

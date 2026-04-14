@@ -981,10 +981,24 @@ async def internal_credits_me(
             "credits_enabled": False,
             "balance": 0,
             "plan": "free",
+            "starter_redeem_available": False,
         }
     sub = (request.headers.get("x-user-sub") or "").strip() or None
-    u = await get_or_create_user(session, email=email, google_sub=sub)
-    await session.commit()
+
+    async def _load_user():
+        u_inner = await get_or_create_user(session, email=email, google_sub=sub)
+        await session.commit()
+        return u_inner
+
+    try:
+        # Avoid indefinite hang when the pool is saturated (long video jobs hold connections).
+        u = await asyncio.wait_for(_load_user(), timeout=80.0)
+    except asyncio.TimeoutError:
+        logger.error("internal/credits/me timeout email=%s", email[:48])
+        raise HTTPException(
+            status_code=503,
+            detail="Credits service busy (database). Retry shortly.",
+        ) from None
     return {
         "credits_enabled": True,
         "balance": int(u.credit_balance),
