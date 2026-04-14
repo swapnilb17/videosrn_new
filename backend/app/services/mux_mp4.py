@@ -11,6 +11,9 @@ from app.services.video_watermark import (
 
 logger = logging.getLogger(__name__)
 
+# Avoid subprocess pipe deadlock with capture_output=True (see slideshow_video._FF_QUIET).
+_FF_QUIET = ("-hide_banner", "-nostats", "-loglevel", "error")
+
 _FFPROBE_TIMEOUT_SEC = 45
 # Re-encode can be very slow on small VMs; cap subprocess so the API job cannot hang forever.
 # A ~16MB Veo file used to get only ~312s (180 + bytes//120k) and timed out on t-class CPUs.
@@ -104,6 +107,7 @@ def overlay_frame_watermark_on_mp4(
             cmd = [
                 ffmpeg,
                 "-hide_banner",
+                "-nostats",
                 "-loglevel",
                 "error",
                 "-y",
@@ -135,6 +139,7 @@ def overlay_frame_watermark_on_mp4(
             cmd = [
                 ffmpeg,
                 "-hide_banner",
+                "-nostats",
                 "-loglevel",
                 "error",
                 "-y",
@@ -222,6 +227,7 @@ def mux_still_image_and_audio(
     cmd = [
         ffmpeg,
         "-y",
+        *_FF_QUIET,
         "-loop",
         "1",
         "-i",

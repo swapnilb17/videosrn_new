@@ -14,6 +14,10 @@ from app.services.video_watermark import (
 
 logger = logging.getLogger(__name__)
 
+# Keep stderr quiet when using subprocess.run(..., capture_output=True). Default FFmpeg logs frame stats to stderr; filling the pipe buffer can deadlock the child (blocked write)
+# while Python waits for process exit.
+_FF_QUIET = ("-hide_banner", "-nostats", "-loglevel", "error")
+
 # Zoom range (scale multiplier from 1 .. 1+delta). Slightly stronger reads more "decisive" on screen.
 _KB_ZOOM_DELTA = 0.11
 # Per-segment cap: small EC2 + 1080p stillimage can exceed 10min/slide without preset=veryfast.
@@ -116,6 +120,7 @@ def trim_mp3_to_max_duration(
     base = [
         ffmpeg,
         "-y",
+        *_FF_QUIET,
         "-i",
         str(src_mp3),
         "-t",
@@ -246,6 +251,9 @@ def mux_slideshow_with_audio(
     merged = work / "video_noaudio.mp4"
     n_slides = len(image_paths)
     cpus = os.cpu_count() or 1
+    max_workers = min(n_slides, max(1, cpus))
+    # Ceil(cpus / workers) so e.g. 8 cores + 5 slides → 2 threads/encode (~full machine).
+    segment_threads = max(1, (cpus + max_workers - 1) // max_workers)
     try:
         def _encode_segment(i: int, img: Path, dur: float) -> Path:
             dur = max(0.5, float(dur))
@@ -277,6 +285,7 @@ def mux_slideshow_with_audio(
                 cmd = [
                     ffmpeg,
                     "-y",
+                    *_FF_QUIET,
                     "-framerate",
                     "30",
                     "-loop",
@@ -304,7 +313,7 @@ def mux_slideshow_with_audio(
                     "-tune",
                     "stillimage",
                     "-threads",
-                    "1",
+                    str(segment_threads),
                     str(seg),
                 ]
             else:
@@ -312,6 +321,7 @@ def mux_slideshow_with_audio(
                 cmd = [
                     ffmpeg,
                     "-y",
+                    *_FF_QUIET,
                     "-loop",
                     "1",
                     "-t",
@@ -337,7 +347,7 @@ def mux_slideshow_with_audio(
                     "-tune",
                     "stillimage",
                     "-threads",
-                    "1",
+                    str(segment_threads),
                     str(seg),
                 ]
             try:
@@ -365,10 +375,10 @@ def mux_slideshow_with_audio(
             logger.info("slideshow: segment %s/%s done", i + 1, n_slides)
             return seg
 
-        max_workers = min(n_slides, max(1, min(4, cpus)))
         logger.info(
-            "slideshow: parallel segment encode workers=%s (cpus=%s)",
+            "slideshow: parallel segment encode workers=%s threads/encode=%s (cpus=%s)",
             max_workers,
+            segment_threads,
             cpus,
         )
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -393,6 +403,7 @@ def mux_slideshow_with_audio(
         cmd_cat = [
             ffmpeg,
             "-y",
+            *_FF_QUIET,
             "-f",
             "concat",
             "-safe",
@@ -422,6 +433,7 @@ def mux_slideshow_with_audio(
         cmd_final = [
             ffmpeg,
             "-y",
+            *_FF_QUIET,
             "-i",
             str(merged),
             "-i",
