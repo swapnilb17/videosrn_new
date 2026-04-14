@@ -2,10 +2,11 @@ import logging
 import subprocess
 from pathlib import Path
 
+from PIL import Image
+
 from app.services.ffmpeg_resolve import resolve_ffmpeg, resolve_ffprobe
 from app.services.video_watermark import (
     FrameOverlayAssets,
-    ffmpeg_filter_scale_pad_then_overlay_wm,
     write_watermark_overlay_png,
 )
 
@@ -201,6 +202,23 @@ _FFMPEG_HINT = (
 )
 
 
+def _pil_composite_still(
+    slide: Path, wm: Path, out: Path, width: int, height: int,
+) -> None:
+    """Scale slide to fill target, center-crop, composite watermark, save as RGB PNG."""
+    bg = Image.open(slide).convert("RGBA")
+    scale = max(width / bg.width, height / bg.height)
+    nw, nh = round(bg.width * scale), round(bg.height * scale)
+    if (nw, nh) != bg.size:
+        bg = bg.resize((nw, nh), Image.Resampling.LANCZOS)
+    left = (nw - width) // 2
+    top = (nh - height) // 2
+    bg = bg.crop((left, top, left + width, top + height))
+    wm_img = Image.open(wm).convert("RGBA")
+    bg = Image.alpha_composite(bg, wm_img)
+    bg.convert("RGB").save(out, format="PNG")
+
+
 def mux_still_image_and_audio(
     image: Path,
     audio: Path,
@@ -217,13 +235,14 @@ def mux_still_image_and_audio(
 
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     wm = out_mp4.parent / f".wm_{out_mp4.stem}.png"
+    comp = out_mp4.parent / f".comp_{out_mp4.stem}.png"
     write_watermark_overlay_png(
         video_width,
         video_height,
         wm,
         assets=overlay_assets or FrameOverlayAssets(),
     )
-    fc = ffmpeg_filter_scale_pad_then_overlay_wm(video_width, video_height)
+    _pil_composite_still(image, wm, comp, video_width, video_height)
     cmd = [
         ffmpeg,
         "-y",
@@ -231,23 +250,21 @@ def mux_still_image_and_audio(
         "-loop",
         "1",
         "-i",
-        str(image),
-        "-loop",
-        "1",
-        "-i",
-        str(wm),
+        str(comp),
         "-i",
         str(audio),
-        "-filter_complex",
-        fc,
+        "-vf",
+        "format=yuv420p",
         "-map",
-        "[outv]",
+        "0:v:0",
         "-map",
-        "2:a:0",
+        "1:a:0",
         "-c:v",
         "libx264",
         "-tune",
         "stillimage",
+        "-preset",
+        "veryfast",
         "-c:a",
         "aac",
         "-b:a",
@@ -263,6 +280,7 @@ def mux_still_image_and_audio(
         raise RuntimeError(_FFMPEG_HINT) from e
     finally:
         wm.unlink(missing_ok=True)
+        comp.unlink(missing_ok=True)
     if proc.returncode != 0:
         logger.error("ffmpeg mux failed: %s", proc.stderr)
         raise RuntimeError("Video mux failed (is ffmpeg installed and on PATH?)")

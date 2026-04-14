@@ -5,16 +5,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 
+from PIL import Image
+
 from app.services.ffmpeg_resolve import resolve_ffmpeg, resolve_ffprobe
 from app.services.video_watermark import (
     FrameOverlayAssets,
-    ffmpeg_filter_scale_pad_then_overlay_wm,
     write_watermark_overlay_png,
 )
 
 logger = logging.getLogger(__name__)
 
-# Keep stderr quiet when using subprocess.run(..., capture_output=True). Default FFmpeg logs frame stats to stderr; filling the pipe buffer can deadlock the child (blocked write)
+# Keep stderr quiet when using subprocess.run(..., capture_output=True). Default FFmpeg
+# logs frame stats to stderr; filling the pipe buffer can deadlock the child (blocked write)
 # while Python waits for process exit.
 _FF_QUIET = ("-hide_banner", "-nostats", "-loglevel", "error")
 
@@ -35,8 +37,27 @@ def _segment_encode_timeout_sec(duration_sec: float) -> float:
     )
 
 
-def _filter_complex_static_slide(width: int, height: int) -> str:
-    return ffmpeg_filter_scale_pad_then_overlay_wm(width, height)
+def _pil_composite_slide(
+    slide: Path, wm: Path, out: Path, width: int, height: int,
+) -> None:
+    """Scale slide to cover target, center-crop, composite watermark, save as RGB PNG.
+
+    This replaces the FFmpeg overlay filter which is catastrophically slow on
+    ARM/Graviton due to per-pixel RGBA alpha blending without NEON optimisation.
+    PIL does the same composite in milliseconds.
+    """
+    bg = Image.open(slide).convert("RGBA")
+    scale = max(width / bg.width, height / bg.height)
+    nw = round(bg.width * scale)
+    nh = round(bg.height * scale)
+    if (nw, nh) != bg.size:
+        bg = bg.resize((nw, nh), Image.Resampling.LANCZOS)
+    left = (nw - width) // 2
+    top = (nh - height) // 2
+    bg = bg.crop((left, top, left + width, top + height))
+    wm_img = Image.open(wm).convert("RGBA")
+    bg = Image.alpha_composite(bg, wm_img)
+    bg.convert("RGB").save(out, format="PNG")
 
 
 def _ken_burns_scale_multiplier(zoom_in: bool, denom: int) -> str:
@@ -59,17 +80,15 @@ def _filter_complex_ken_burns_slide(
     """Ken Burns via scale+eval=frame + center crop (interpolated resize; avoids zoompan crop jitter)."""
     denom = max(num_frames - 1, 1)
     zm = _ken_burns_scale_multiplier(zoom_in, denom)
-    # Cover output frame first so every pixel is filled, then zoom inside that raster.
+    # Watermark is pre-composited in PIL; no overlay input needed.
     cover = f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase[fill]"
     anim = (
         f"[fill]scale=w='iw*{zm}':h='ih*{zm}':eval=frame:"
         f"flags=lanczos+accurate_rnd+full_chroma_inp[sc]"
     )
-    # Default crop centers each frame when iw/ih change (see crop filter x/y defaults).
     crop = f"[sc]crop={width}:{height}[cr]"
-    fmt = "[cr]format=yuv420p[bg]"
-    ov = "[bg][1:v]overlay=0:0:format=auto[outv]"
-    return f"{cover};{anim};{crop};{fmt};{ov}"
+    fmt = "[cr]format=yuv420p[outv]"
+    return f"{cover};{anim};{crop};{fmt}"
 
 
 def audio_duration_seconds(ffprobe: str, audio: Path) -> float:
@@ -273,6 +292,12 @@ def mux_slideshow_with_audio(
                 wm_png = wm_with_cta
             else:
                 wm_png = wm_main
+
+            # Pre-composite watermark onto slide in PIL (fast, ARM-safe).
+            # FFmpeg overlay filter is extremely slow on aarch64/Graviton.
+            comp = work / f"comp_{i:03d}.png"
+            _pil_composite_slide(img, wm_png, comp, width, height)
+
             use_ken = ken_burns and not is_cta_end
             if use_ken:
                 num_frames = max(24, int(round(dur * 30)))
@@ -293,11 +318,7 @@ def mux_slideshow_with_audio(
                     "-t",
                     f"{dur:.3f}",
                     "-i",
-                    str(img),
-                    "-loop",
-                    "1",
-                    "-i",
-                    str(wm_png),
+                    str(comp),
                     "-filter_complex",
                     fc,
                     "-map",
@@ -317,7 +338,6 @@ def mux_slideshow_with_audio(
                     str(seg),
                 ]
             else:
-                fc = _filter_complex_static_slide(width, height)
                 cmd = [
                     ffmpeg,
                     "-y",
@@ -327,15 +347,9 @@ def mux_slideshow_with_audio(
                     "-t",
                     f"{dur:.3f}",
                     "-i",
-                    str(img),
-                    "-loop",
-                    "1",
-                    "-i",
-                    str(wm_png),
-                    "-filter_complex",
-                    fc,
-                    "-map",
-                    "[outv]",
+                    str(comp),
+                    "-vf",
+                    "format=yuv420p",
                     "-c:v",
                     "libx264",
                     "-pix_fmt",
@@ -372,6 +386,7 @@ def mux_slideshow_with_audio(
             if proc.returncode != 0:
                 logger.error("ffmpeg segment %s failed: %s", i, proc.stderr)
                 raise RuntimeError(f"Failed to encode slide {i}")
+            comp.unlink(missing_ok=True)
             logger.info("slideshow: segment %s/%s done", i + 1, n_slides)
             return seg
 
