@@ -1,4 +1,5 @@
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -12,27 +13,16 @@ from app.services.video_watermark import (
 
 logger = logging.getLogger(__name__)
 
+_FRAME_EXTRACT_TIMEOUT = 120
+_FRAME_REENCODE_TIMEOUT = 600
+
 # Avoid subprocess pipe deadlock with capture_output=True (see slideshow_video._FF_QUIET).
 _FF_QUIET = ("-hide_banner", "-nostats", "-loglevel", "error")
 
 _FFPROBE_TIMEOUT_SEC = 45
-# Re-encode can be very slow on small VMs; cap subprocess so the API job cannot hang forever.
-# A ~16MB Veo file used to get only ~312s (180 + bytes//120k) and timed out on t-class CPUs.
-_FFMPEG_OVERLAY_TIMEOUT_MIN_SEC = 1200
-_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC = 1800
-# asyncio.wait_for around asyncio.to_thread(overlay_...) must exceed subprocess timeout.
-FFMPEG_OVERLAY_ASYNC_GUARD_SEC = float(_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC + 300)
-
-
-def _ffmpeg_overlay_timeout_sec(video_path: Path) -> int:
-    try:
-        n = video_path.stat().st_size
-    except OSError:
-        n = 0
-    # Extra budget for heavier bitrates (capped so huge files stay within MAX).
-    extra = min(600, max(0, n) // 100_000)
-    scaled = _FFMPEG_OVERLAY_TIMEOUT_MIN_SEC + extra
-    return min(_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC, scaled)
+# PIL frame-by-frame overlay: extract + composite + re-encode is bounded by these two.
+# asyncio.wait_for around asyncio.to_thread(overlay_...) must exceed the sum.
+FFMPEG_OVERLAY_ASYNC_GUARD_SEC = float(_FRAME_EXTRACT_TIMEOUT + _FRAME_REENCODE_TIMEOUT + 120)
 
 
 def _ffprobe_has_audio_stream(ffprobe: str, video_path: Path) -> bool:
@@ -57,13 +47,31 @@ def _ffprobe_has_audio_stream(ffprobe: str, video_path: Path) -> bool:
     return r.returncode == 0 and bool((r.stdout or "").strip())
 
 
+def _ffprobe_fps(ffprobe: str, video_path: Path) -> str:
+    """Return the r_frame_rate string (e.g. '24/1') for re-encode."""
+    r = subprocess.run(
+        [
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ],
+        capture_output=True, text=True, check=False, timeout=_FFPROBE_TIMEOUT_SEC,
+    )
+    return (r.stdout or "24").strip() or "24"
+
+
 def overlay_frame_watermark_on_mp4(
     video_path: Path,
     *,
     ffmpeg_explicit: str = "",
     assets: FrameOverlayAssets | None = None,
 ) -> None:
-    """Burn slideshow-style credit overlay (see video_watermark) into an existing MP4."""
+    """Burn credit overlay into an existing MP4.
+
+    Uses PIL to composite the watermark frame-by-frame, avoiding FFmpeg's
+    overlay filter which is catastrophically slow on ARM/Graviton.
+    """
     ffmpeg = resolve_ffmpeg(explicit=ffmpeg_explicit or None)
     ffprobe = resolve_ffprobe(ffmpeg_explicit=ffmpeg_explicit or "")
     if not ffmpeg or not ffprobe:
@@ -73,21 +81,12 @@ def overlay_frame_watermark_on_mp4(
 
     proc_dim = subprocess.run(
         [
-            ffprobe,
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height",
-            "-of",
-            "csv=s=x:p=0",
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0",
             str(video_path),
         ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=_FFPROBE_TIMEOUT_SEC,
+        capture_output=True, text=True, check=False, timeout=_FFPROBE_TIMEOUT_SEC,
     )
     if proc_dim.returncode != 0 or not (proc_dim.stdout or "").strip():
         raise RuntimeError(f"ffprobe dimension failed: {proc_dim.stderr}")
@@ -97,102 +96,65 @@ def overlay_frame_watermark_on_mp4(
     w, h = int(parts[0]), int(parts[1])
 
     wm = video_path.parent / f".wm_credit_{video_path.stem}.png"
+    frames_dir = video_path.parent / f".frames_{video_path.stem}"
     tmp_out = video_path.parent / f".credit_out_{video_path.name}"
     try:
         write_watermark_overlay_png(w, h, wm, assets=assets or FrameOverlayAssets())
         has_audio = _ffprobe_has_audio_stream(ffprobe, video_path)
-        fc = "[0:v][1:v]overlay=0:0:format=auto[outv]"
-        enc_timeout = _ffmpeg_overlay_timeout_sec(video_path)
-        # veryfast: much quicker than "fast" on small instances; fine for a short credit overlay pass.
-        if has_audio:
-            cmd = [
-                ffmpeg,
-                "-hide_banner",
-                "-nostats",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(video_path),
-                "-loop",
-                "1",
-                "-i",
-                str(wm),
-                "-filter_complex",
-                fc,
-                "-map",
-                "[outv]",
-                "-map",
-                "0:a:0",
-                "-c:v",
-                "libx264",
-                "-crf",
-                "23",
-                "-preset",
-                "veryfast",
-                "-threads",
-                "0",
-                "-c:a",
-                "copy",
-                str(tmp_out),
-            ]
-        else:
-            cmd = [
-                ffmpeg,
-                "-hide_banner",
-                "-nostats",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(video_path),
-                "-loop",
-                "1",
-                "-i",
-                str(wm),
-                "-filter_complex",
-                fc,
-                "-map",
-                "[outv]",
-                "-c:v",
-                "libx264",
-                "-crf",
-                "23",
-                "-preset",
-                "veryfast",
-                "-threads",
-                "0",
-                str(tmp_out),
-            ]
+        fps = _ffprobe_fps(ffprobe, video_path)
+
+        # 1. Extract frames as JPEG (fast, small on disk)
+        frames_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "ffmpeg credit overlay: timeout=%ss size=%s bytes",
-            enc_timeout,
+            "credit overlay: extracting frames via PIL path (size=%s bytes)",
             video_path.stat().st_size if video_path.is_file() else 0,
         )
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=enc_timeout,
-            )
-        except subprocess.TimeoutExpired:
-            logger.error(
-                "ffmpeg credit overlay timed out after %ss (input %s bytes)",
-                enc_timeout,
-                video_path.stat().st_size if video_path.is_file() else 0,
-            )
-            raise RuntimeError(
-                f"Video credit overlay timed out after {enc_timeout}s; use a larger instance, "
-                "or set VEO_APPLY_CREDIT_OVERLAY=false to skip re-encode"
-            ) from None
-        if proc.returncode != 0:
-            logger.error("ffmpeg credit overlay failed: %s", proc.stderr)
-            raise RuntimeError("Video credit overlay failed (ffmpeg)")
+        r = subprocess.run(
+            [
+                ffmpeg, "-y", *_FF_QUIET,
+                "-i", str(video_path),
+                "-qscale:v", "1",
+                str(frames_dir / "f_%06d.jpg"),
+            ],
+            capture_output=True, text=True, check=False, timeout=_FRAME_EXTRACT_TIMEOUT,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"Frame extraction failed: {r.stderr[:500]}")
+
+        # 2. Composite watermark on each frame in PIL (fast on all archs)
+        wm_img = Image.open(wm).convert("RGBA")
+        frame_files = sorted(frames_dir.glob("f_*.jpg"))
+        for fp in frame_files:
+            bg = Image.open(fp).convert("RGBA")
+            bg = Image.alpha_composite(bg, wm_img)
+            bg.convert("RGB").save(fp, format="JPEG", quality=97)
+        logger.info("credit overlay: composited %d frames", len(frame_files))
+
+        # 3. Re-encode composited frames + original audio
+        cmd = [
+            ffmpeg, "-y", *_FF_QUIET,
+            "-framerate", fps,
+            "-i", str(frames_dir / "f_%06d.jpg"),
+        ]
+        if has_audio:
+            cmd += ["-i", str(video_path), "-map", "0:v:0", "-map", "1:a:0", "-c:a", "copy"]
+        cmd += [
+            "-c:v", "libx264", "-crf", "23", "-preset", "veryfast",
+            "-pix_fmt", "yuv420p", "-threads", "0",
+            str(tmp_out),
+        ]
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=_FRAME_REENCODE_TIMEOUT,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"Frame re-encode failed: {r.stderr[:500]}")
+
         tmp_out.replace(video_path)
+        logger.info("credit overlay: done (PIL frame path)")
     finally:
         wm.unlink(missing_ok=True)
+        if frames_dir.is_dir():
+            shutil.rmtree(frames_dir, ignore_errors=True)
         if tmp_out.is_file():
             tmp_out.unlink(missing_ok=True)
 
