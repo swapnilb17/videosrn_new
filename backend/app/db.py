@@ -30,11 +30,22 @@ def normalize_postgres_url_for_async(url: str) -> str:
 
 def create_async_engine_from_settings(settings: Settings) -> AsyncEngine:
     url = normalize_postgres_url_for_async((settings.database_url or "").strip())
-    return create_async_engine(
-        url,
-        echo=False,
-        connect_args=_engine_connect_args(url),
-    )
+    kw: dict = {
+        "echo": False,
+        "connect_args": _engine_connect_args(url),
+    }
+    # Topic-to-video and other async jobs can hold one session open for many minutes while
+    # FFmpeg / Veo run. Default pool (5 + overflow) starves short reads like /internal/user-media
+    # and causes long waits → Next.js aborts with 504.
+    if "postgresql" in url:
+        kw.update(
+            pool_size=15,
+            max_overflow=25,
+            pool_timeout=90,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+        )
+    return create_async_engine(url, **kw)
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

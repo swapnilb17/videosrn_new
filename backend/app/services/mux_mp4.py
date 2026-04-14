@@ -12,9 +12,12 @@ from app.services.video_watermark import (
 logger = logging.getLogger(__name__)
 
 _FFPROBE_TIMEOUT_SEC = 45
-# Re-encode can be slow on small VMs; cap subprocess so the API job cannot hang forever.
-_FFMPEG_OVERLAY_TIMEOUT_MIN_SEC = 300
-_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC = 1200
+# Re-encode can be very slow on small VMs; cap subprocess so the API job cannot hang forever.
+# A ~16MB Veo file used to get only ~312s (180 + bytes//120k) and timed out on t-class CPUs.
+_FFMPEG_OVERLAY_TIMEOUT_MIN_SEC = 1200
+_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC = 1800
+# asyncio.wait_for around asyncio.to_thread(overlay_...) must exceed subprocess timeout.
+FFMPEG_OVERLAY_ASYNC_GUARD_SEC = float(_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC + 300)
 
 
 def _ffmpeg_overlay_timeout_sec(video_path: Path) -> int:
@@ -22,9 +25,10 @@ def _ffmpeg_overlay_timeout_sec(video_path: Path) -> int:
         n = video_path.stat().st_size
     except OSError:
         n = 0
-    # Veo MP4s are short but large; small EC2 instances need headroom for libx264.
-    scaled = 180 + min(900, max(0, n) // 120_000)
-    return max(_FFMPEG_OVERLAY_TIMEOUT_MIN_SEC, min(_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC, scaled))
+    # Extra budget for heavier bitrates (capped so huge files stay within MAX).
+    extra = min(600, max(0, n) // 100_000)
+    scaled = _FFMPEG_OVERLAY_TIMEOUT_MIN_SEC + extra
+    return min(_FFMPEG_OVERLAY_TIMEOUT_MAX_SEC, scaled)
 
 
 def _ffprobe_has_audio_stream(ffprobe: str, video_path: Path) -> bool:
@@ -174,7 +178,8 @@ def overlay_frame_watermark_on_mp4(
                 video_path.stat().st_size if video_path.is_file() else 0,
             )
             raise RuntimeError(
-                f"Video credit overlay timed out after {enc_timeout}s; try a larger instance or raise timeout"
+                f"Video credit overlay timed out after {enc_timeout}s; use a larger instance, "
+                "or set VEO_APPLY_CREDIT_OVERLAY=false to skip re-encode"
             ) from None
         if proc.returncode != 0:
             logger.error("ffmpeg credit overlay failed: %s", proc.stderr)

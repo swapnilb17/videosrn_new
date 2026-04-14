@@ -6,8 +6,8 @@ import {
 } from "@/lib/internal-backend";
 import { NextRequest, NextResponse } from "next/server";
 
-/** Avoid hung Media Library when the FastAPI / DB call never returns (wrong URL, pool exhaustion). */
-const BACKEND_FETCH_MS = 30_000;
+/** FastAPI /internal/user-media — allow headroom for Postgres under load (jobs holding pool slots). */
+const BACKEND_FETCH_MS = 90_000;
 
 export async function GET(request: NextRequest) {
   const session = await getServerSession(authOptions);

@@ -34,7 +34,7 @@ def _without_blank_aws_profile() -> Iterator[None]:
         os.environ[key] = val
 
 
-def s3_client(settings: Settings) -> BaseClient:
+def s3_client(settings: Settings, *, read_timeout: int | None = None) -> BaseClient:
     region = (settings.s3_region or "").strip() or None
     profile = (settings.aws_profile or "").strip()
     kw: dict[str, Any] = {}
@@ -42,9 +42,10 @@ def s3_client(settings: Settings) -> BaseClient:
     if endpoint:
         kw["endpoint_url"] = endpoint
     # Avoid indefinite hangs on bad IAM/network (default botocore timeouts are very high).
+    rt = 120 if read_timeout is None else max(30, int(read_timeout))
     cfg = Config(
         connect_timeout=15,
-        read_timeout=120,
+        read_timeout=rt,
         retries={"max_attempts": 3, "mode": "standard"},
     )
     with _without_blank_aws_profile():
@@ -120,11 +121,47 @@ def safe_upload(
 
 
 def upload_veo3_mp4(settings: Settings, job_dir: str, filename: str, local_path: Path) -> str:
-    """Upload a Veo-generated MP4 to S3; returns the object key."""
+    """Upload a Veo-generated MP4 to S3; returns the object key.
+
+    Uses a longer read timeout than default S3 calls — Veo outputs are often 10–80MB and
+    slow uplinks can exceed botocore's default 120s per request on multipart chunks.
+    """
+    bucket = (settings.s3_bucket or "").strip()
     key = settings.s3_key_for_veo3(job_dir, filename)
-    safe_upload(settings, local_path, key, content_type="video/mp4")
-    logger.info("S3 uploaded Veo video s3://%s/%s", (settings.s3_bucket or "").strip(), key)
-    return key
+    try:
+        sz = local_path.stat().st_size
+    except OSError:
+        sz = 0
+    logger.info(
+        "Veo S3 upload starting: s3://%s/%s (%s bytes)",
+        bucket,
+        key,
+        sz,
+    )
+    last_err: BaseException | None = None
+    for attempt in (1, 2):
+        try:
+            #600s read timeout for large object uploads; IAM errors fail fast on connect.
+            client = s3_client(settings, read_timeout=600)
+            upload_file(
+                client,
+                bucket,
+                key,
+                local_path,
+                content_type="video/mp4",
+            )
+            logger.info("Veo S3 upload done: s3://%s/%s", bucket, key)
+            return key
+        except (BotoCoreError, ClientError, OSError) as e:
+            last_err = e
+            logger.warning(
+                "Veo S3 upload attempt %s/2 failed for s3://%s/%s: %s",
+                attempt,
+                bucket,
+                key,
+                e,
+            )
+    raise S3UploadError(str(last_err)) from last_err
 
 
 def safe_presign_get(

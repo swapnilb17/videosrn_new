@@ -299,7 +299,7 @@ export async function fetchUserMedia(
 ): Promise<MediaItemResponse[]> {
   const qs = type ? `?type=${encodeURIComponent(type)}` : "";
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 45_000);
+  const t = setTimeout(() => ac.abort(), 100_000);
   try {
     const res = await fetch(`/api/user-media${qs}`, {
       credentials: "include",

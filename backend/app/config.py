@@ -221,6 +221,11 @@ class Settings(BaseSettings):
         default=True,
         validation_alias="ARTIFACT_CLEANUP_AFTER_S3",
     )
+    # When false, Image to Video / Image to Ad skip FFmpeg credit burn-in (fast on small CPUs; no overlay).
+    veo_apply_credit_overlay: bool = Field(
+        default=True,
+        validation_alias="VEO_APPLY_CREDIT_OVERLAY",
+    )
 
     # Google OAuth (browser sign-in). When all four are set, POST /generate requires a signed-in user.
     session_secret: str = Field(default="", validation_alias="SESSION_SECRET")
