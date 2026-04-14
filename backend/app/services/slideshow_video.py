@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
@@ -15,6 +16,19 @@ logger = logging.getLogger(__name__)
 
 # Zoom range (scale multiplier from 1 .. 1+delta). Slightly stronger reads more "decisive" on screen.
 _KB_ZOOM_DELTA = 0.11
+# Per-segment cap: small EC2 + 1080p stillimage can exceed 10min/slide without preset=veryfast.
+_FFMPEG_SEGMENT_TIMEOUT_MIN = 120.0
+_FFMPEG_SEGMENT_TIMEOUT_MAX = 1800.0
+_FFMPEG_CONCAT_TIMEOUT = 300.0
+_FFMPEG_FINAL_MUX_TIMEOUT = 900.0
+
+
+def _segment_encode_timeout_sec(duration_sec: float) -> float:
+    d = max(0.5, float(duration_sec))
+    return min(
+        _FFMPEG_SEGMENT_TIMEOUT_MAX,
+        max(_FFMPEG_SEGMENT_TIMEOUT_MIN, d * 100.0 + 90.0),
+    )
 
 
 def _filter_complex_static_slide(width: int, height: int) -> str:
@@ -230,9 +244,19 @@ def mux_slideshow_with_audio(
     seg_files: list[Path] = []
     list_path = work / "concat.txt"
     merged = work / "video_noaudio.mp4"
+    n_slides = len(image_paths)
+    cpus = os.cpu_count() or 1
     try:
         def _encode_segment(i: int, img: Path, dur: float) -> Path:
             dur = max(0.5, float(dur))
+            seg_timeout = _segment_encode_timeout_sec(dur)
+            logger.info(
+                "slideshow: segment %s/%s start dur=%.2fs timeout=%.0fs",
+                i + 1,
+                n_slides,
+                dur,
+                seg_timeout,
+            )
             seg = work / f"part_{i:03d}.mp4"
             is_cta_end = final_slide_is_dedicated_cta and i == last_idx
             if is_cta_end:
@@ -308,18 +332,45 @@ def mux_slideshow_with_audio(
                     "yuv420p",
                     "-r",
                     "30",
+                    "-preset",
+                    "veryfast",
+                    "-tune",
+                    "stillimage",
                     "-threads",
                     "1",
                     str(seg),
                 ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=seg_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    "ffmpeg segment %s timed out after %.0fs (slide dur=%.2fs)",
+                    i,
+                    seg_timeout,
+                    dur,
+                )
+                raise RuntimeError(
+                    f"Slide {i} encode timed out after {int(seg_timeout)}s; "
+                    "try a larger instance or lower resolution."
+                ) from None
             if proc.returncode != 0:
                 logger.error("ffmpeg segment %s failed: %s", i, proc.stderr)
                 raise RuntimeError(f"Failed to encode slide {i}")
+            logger.info("slideshow: segment %s/%s done", i + 1, n_slides)
             return seg
 
-        n_slides = len(image_paths)
-        max_workers = min(n_slides, 4)
+        max_workers = min(n_slides, max(1, min(4, cpus)))
+        logger.info(
+            "slideshow: parallel segment encode workers=%s (cpus=%s)",
+            max_workers,
+            cpus,
+        )
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
                 pool.submit(_encode_segment, i, img, dur): i
@@ -352,7 +403,17 @@ def mux_slideshow_with_audio(
             "copy",
             str(merged),
         ]
-        proc = subprocess.run(cmd_cat, capture_output=True, text=True, check=False)
+        try:
+            proc = subprocess.run(
+                cmd_cat,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_FFMPEG_CONCAT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("ffmpeg concat timed out after %.0fs", _FFMPEG_CONCAT_TIMEOUT)
+            raise RuntimeError("Concat slides timed out") from None
         if proc.returncode != 0:
             logger.error("ffmpeg concat failed: %s", proc.stderr)
             raise RuntimeError("Failed to concatenate slides")
@@ -378,7 +439,17 @@ def mux_slideshow_with_audio(
             "-shortest",
             str(out_mp4),
         ]
-        proc = subprocess.run(cmd_final, capture_output=True, text=True, check=False)
+        try:
+            proc = subprocess.run(
+                cmd_final,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_FFMPEG_FINAL_MUX_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("ffmpeg final mux timed out after %.0fs", _FFMPEG_FINAL_MUX_TIMEOUT)
+            raise RuntimeError("Final audio mux timed out") from None
         if proc.returncode != 0:
             logger.error("ffmpeg final mux failed: %s", proc.stderr)
             raise RuntimeError("Failed to mux audio with slideshow")
