@@ -7,7 +7,17 @@ import {
 import { NextRequest, NextResponse } from "next/server";
 
 /** FastAPI /internal/user-media — allow headroom for Postgres under load (jobs holding pool slots). */
-const BACKEND_FETCH_MS = 90_000;
+const BACKEND_FETCH_MS = 120_000;
+
+export const dynamic = "force-dynamic";
+
+function mediaErrorJson(
+  error: string,
+  detail: string,
+  status: number,
+): NextResponse {
+  return NextResponse.json({ error, detail, items: [] }, { status });
+}
 
 export async function GET(request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -32,15 +42,14 @@ export async function GET(request: NextRequest) {
     const timedOut =
       e instanceof Error &&
       (e.name === "TimeoutError" || e.name === "AbortError");
-    return NextResponse.json(
-      {
-        error: timedOut
-          ? "Media service timed out. Check backend logs and DATABASE_URL / pool."
-          : "Cannot reach media backend",
-        detail: msg,
-        items: [],
-      },
-      { status: timedOut ? 504 : 502 },
+    return mediaErrorJson(
+      timedOut
+        ? "Media service timed out"
+        : "Cannot reach media backend",
+      timedOut
+        ? "Increase DB pool or reduce long-running jobs; verify INTERNAL_BACKEND_URL."
+        : msg,
+      timedOut ? 504 : 502,
     );
   }
 
@@ -49,9 +58,13 @@ export async function GET(request: NextRequest) {
   try {
     data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
   } catch {
-    return NextResponse.json(
-      { error: "Invalid JSON from media backend", items: [] },
-      { status: 502 },
+    const hint = raw.trim().slice(0, 160);
+    return mediaErrorJson(
+      "Invalid JSON from media backend",
+      hint
+        ? `Non-JSON body (often proxy HTML): ${hint}`
+        : "Empty body — check nginx/Cloudflare and INTERNAL_API_SECRET.",
+      502,
     );
   }
 
@@ -60,11 +73,9 @@ export async function GET(request: NextRequest) {
       (typeof data.detail === "string" && data.detail) ||
       (typeof data.error === "string" && data.error) ||
       `Backend HTTP ${res.status}`;
-    return NextResponse.json(
-      { error: "Backend error", detail, items: [] },
-      { status: res.status },
-    );
+    return mediaErrorJson("Backend error", detail, res.status);
   }
 
-  return NextResponse.json(data);
+  const items = Array.isArray(data.items) ? data.items : [];
+  return NextResponse.json({ items });
 }

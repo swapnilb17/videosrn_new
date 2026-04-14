@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Film, ImageIcon, Mic, Loader2, FolderOpen, MoreVertical, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadUrlAsFile, resolveMediaFilename } from "@/lib/client-download";
-import { fetchUserMedia, type MediaItemResponse } from "@/lib/api";
+import { ApiError, fetchUserMedia, type MediaItemResponse } from "@/lib/api";
 
 const tabs = [
   { value: "", label: "All" },
@@ -58,8 +58,13 @@ export function MediaGallery() {
       .then((data) => {
         if (!cancelled) setItems(data);
       })
-      .catch((e) => {
-        if (!cancelled) setError(e.message || "Failed to load media");
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        if (e instanceof ApiError) {
+          setError(`${e.detail} (HTTP ${e.status})`);
+          return;
+        }
+        setError(e instanceof Error ? e.message : "Failed to load media");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

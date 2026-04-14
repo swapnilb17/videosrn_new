@@ -39,8 +39,8 @@ def create_async_engine_from_settings(settings: Settings) -> AsyncEngine:
     # and causes long waits → Next.js aborts with 504.
     if "postgresql" in url:
         kw.update(
-            pool_size=20,
-            max_overflow=40,
+            pool_size=25,
+            max_overflow=55,
             pool_timeout=120,
             pool_pre_ping=True,
             pool_recycle=1800,

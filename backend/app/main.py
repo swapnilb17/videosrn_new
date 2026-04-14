@@ -960,6 +960,7 @@ async def internal_user_media(
             status_code=503,
             detail="Media list timed out (database busy). Retry in a moment.",
         ) from None
+    logger.info("internal/user-media ok email=%s count=%s", email[:48], len(items))
     return {"items": items}
 
 
