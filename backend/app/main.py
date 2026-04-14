@@ -1849,6 +1849,22 @@ async def _do_video_pipeline(
             await _fail(str(e))
             raise HTTPException(status_code=500, detail=str(e)) from e
 
+    try:
+        out_sz = mp4_path.stat().st_size
+    except OSError:
+        out_sz = 0
+    if out_sz < 1024:
+        msg = (
+            f"Video file missing or too small after mux ({out_sz} bytes). "
+            f"Path={mp4_path}. Check disk space, FFmpeg logs, and OOM."
+        )
+        logger.error("job=%s %s", job_id, msg)
+        await _fail(
+            "Video encoding did not produce a valid file. See server logs (slideshow/title mux)."
+        )
+        return
+    logger.info("job=%s output.mp4 ready bytes=%s", job_id, out_sz)
+
     thumbnail_attached = False
     if thumbnail_applied and thumb_file.is_file():
         try:
