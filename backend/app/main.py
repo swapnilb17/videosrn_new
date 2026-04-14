@@ -1789,8 +1789,19 @@ async def _do_video_pipeline(
                     durs = word_weighted_durations(segment_texts, total_audio)
             else:
                 durs = word_weighted_durations(segment_texts, total_audio)
+            logger.info(
+                "job=%s slideshow mux start (ffmpeg) slides=%d ken_burns=%s resolution=%sx%s",
+                job_id,
+                len(paths_mux),
+                enhance_kb,
+                visual_settings.video_width,
+                visual_settings.video_height,
+            )
             t0 = time.perf_counter()
-            mux_slideshow_with_audio(
+            # Full slideshow encode is CPU-heavy; must not run on the event loop or
+            # /api/jobs/*/status, /internal/*, and health checks stall for minutes.
+            await asyncio.to_thread(
+                mux_slideshow_with_audio,
                 paths_mux,
                 durs,
                 mp3_path,
@@ -1819,9 +1830,13 @@ async def _do_video_pipeline(
 
     if image_paths is None:
         png_path = job_dir / "title.png"
-        render_title_card(visual_settings, topic, lang, png_path)
+        await asyncio.to_thread(
+            render_title_card, visual_settings, topic, lang, png_path
+        )
         try:
-            mux_still_image_and_audio(
+            logger.info("job=%s title-card mux start (ffmpeg)", job_id)
+            await asyncio.to_thread(
+                mux_still_image_and_audio,
                 png_path,
                 mp3_path,
                 mp4_path,
