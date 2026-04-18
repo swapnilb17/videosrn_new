@@ -83,6 +83,9 @@ const FRAME_BOX =
 
 const LONG_WAIT_HINT_AFTER_MS = 90_000;
 
+/** Aligned with backend PHOTO_VIDEO_PROMPT_MAX_CHARS; cap in onChange because HTML maxLength + React controlled textarea can allow oversized pastes. */
+const PHOTO_VIDEO_PROMPT_MAX = 2500;
+
 function isGatewayOrNetworkFailure(e: unknown): boolean {
   if (e instanceof ApiError && e.status === 524) return true;
   const msg = e instanceof Error ? e.message : String(e);
@@ -197,7 +200,10 @@ export function PhotoToVideo() {
     if (imageMode && startFrame) fd.append("photo", startFrame);
     if (imageMode && endFrame && videoModel !== "kling") fd.append("end_photo", endFrame);
     fd.append("task", task);
-    fd.append("motion_prompt", prompt.trim());
+    fd.append(
+      "motion_prompt",
+      prompt.trim().slice(0, PHOTO_VIDEO_PROMPT_MAX),
+    );
     fd.append("duration", String(duration));
     fd.append("camera_movement", camera);
     fd.append("aspect_ratio", aspect);
@@ -312,10 +318,15 @@ export function PhotoToVideo() {
             <textarea
               className={`${INPUT_CLS} min-h-[88px] resize-y`}
               placeholder="Write your prompt…"
-              maxLength={1000}
+              maxLength={PHOTO_VIDEO_PROMPT_MAX}
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) =>
+                setPrompt(e.target.value.slice(0, PHOTO_VIDEO_PROMPT_MAX))
+              }
             />
+            <p className="text-xs text-slate-600">
+              {prompt.length} / {PHOTO_VIDEO_PROMPT_MAX} characters
+            </p>
             <p className="text-xs text-slate-500">
               {imageMode
                 ? hasEndFrame

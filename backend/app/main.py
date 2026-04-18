@@ -115,6 +115,8 @@ logger = logging.getLogger(__name__)
 
 # Max length for user-authored prompts/topics/ad copy across Topic → Video, Veo flows, and Text → Image.
 USER_PROMPT_MAX_CHARS = 1000
+# Photo-to-video / text-to-video standalone: providers (e.g. Kling) allow longer motion prompts than topic flow.
+PHOTO_VIDEO_PROMPT_MAX_CHARS = 2500
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -2282,10 +2284,10 @@ async def api_photo_to_video(
         )
 
     motion_text = (motion_prompt or "").strip()
-    if len(motion_text) > USER_PROMPT_MAX_CHARS:
+    if len(motion_text) > PHOTO_VIDEO_PROMPT_MAX_CHARS:
         raise HTTPException(
             status_code=422,
-            detail=f"Prompt too long (max {USER_PROMPT_MAX_CHARS} characters)",
+            detail=f"Prompt too long (max {PHOTO_VIDEO_PROMPT_MAX_CHARS} characters)",
         )
     if veo_task == "text_to_video" and len(motion_text) < 3:
         raise HTTPException(status_code=422, detail="Enter a prompt for text-to-video")
