@@ -4,8 +4,8 @@ Supports:
 - Single API key with ``Authorization: Bearer`` (e.g. gateway at api.klingapi.com).
 - Official-style AccessKey + SecretKey: HS256 JWT Bearer (api.klingai.com).
 
-Endpoints follow the common ``/v1/videos/text2video``, ``/v1/videos/image2video``,
-``GET /v1/videos/{task_id}`` layout. Response shapes vary by host; parsing is defensive.
+Create uses ``/v1/videos/text2video`` and ``/v1/videos/image2video``. Status polling tries
+several ``GET`` paths (and optional ``KLING_POLL_PATH``) because gateways differ.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 
@@ -210,54 +211,139 @@ async def _kling_create_task(
     return _extract_task_id(data if isinstance(data, dict) else {})
 
 
+def _kling_poll_candidate_urls(
+    settings: Settings,
+    task_id: str,
+    task_kind: Literal["text_to_video", "image_to_video"],
+) -> list[str]:
+    """Ordered GET URLs to try until one stops returning 404."""
+    base = settings.kling_effective_base_url().rstrip("/")
+    tid = quote(str(task_id).strip(), safe="")
+    kind_seg = "text2video" if task_kind == "text_to_video" else "image2video"
+    paths: list[str] = []
+    tmpl = (settings.kling_poll_path or "").strip()
+    if tmpl:
+        p = tmpl if tmpl.startswith("/") else f"/{tmpl}"
+        try:
+            paths.append(f"{base}{p.format(task_id=tid)}")
+        except (KeyError, ValueError):
+            paths.append(f"{base}{p.replace('{task_id}', tid)}")
+
+    paths.extend(
+        [
+            f"{base}/v1/videos/{tid}",
+            f"{base}/v1/videos/{kind_seg}/{tid}",
+            f"{base}/api/v1/videos/{tid}",
+            f"{base}/api/v1/videos/{kind_seg}/{tid}",
+            f"{base}/kling/v1/videos/{kind_seg}/{tid}",
+        ]
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in paths:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _kling_poll_parse_response(
+    data: dict[str, Any],
+) -> str | None:
+    """Return video URL if generation finished successfully; None if still in progress."""
+    st = _extract_status_str(data)
+    if _status_is_failed(st):
+        raise KlingVideoError(_fail_reason(data))
+    if _status_is_success(st):
+        video_url = _extract_video_url(data)
+        if video_url:
+            return video_url
+    task = _unwrap_payload(data).get("task")
+    if isinstance(task, dict) and str(task.get("status_name", "")).lower() in (
+        "succeed",
+        "success",
+    ):
+        video_url = _extract_video_url(data)
+        if video_url:
+            return video_url
+    return None
+
+
 async def _kling_poll_task(
     client: httpx.AsyncClient,
     settings: Settings,
     task_id: str,
+    task_kind: Literal["text_to_video", "image_to_video"],
 ) -> str:
-    base = settings.kling_effective_base_url().rstrip("/")
-    url = f"{base}/v1/videos/{task_id}"
     token = _kling_bearer_token(settings)
     interval = max(3.0, float(settings.kling_poll_interval_sec))
     attempts = max(1, int(settings.kling_max_poll_attempts))
+    candidates = _kling_poll_candidate_urls(settings, task_id, task_kind)
+    chosen_url: str | None = None
+    consec_all_404 = 0
 
     for _ in range(attempts):
         await asyncio.sleep(interval)
-        resp = await client.get(
-            url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-            },
-        )
-        try:
-            data = resp.json() if resp.content else {}
-        except Exception:
-            logger.warning("Kling poll non-JSON: %s", resp.text[:200])
-            continue
-        if not isinstance(data, dict):
-            continue
-        if resp.status_code >= 400:
-            logger.warning("Kling poll HTTP %s: %s", resp.status_code, resp.text[:300])
+        urls = candidates if chosen_url is None else [chosen_url]
+        got_non404 = False
+
+        for url in urls:
+            resp = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
+            )
+            if resp.status_code == 404:
+                logger.debug("Kling poll 404: %s", url)
+                continue
+            got_non404 = True
+            if chosen_url is None:
+                chosen_url = url
+                logger.info("Kling poll status URL: %s", url)
+
+            try:
+                data = resp.json() if resp.content else {}
+            except Exception:
+                logger.warning("Kling poll non-JSON: %s", resp.text[:200])
+                break
+            if not isinstance(data, dict):
+                break
+            if resp.status_code >= 400:
+                logger.warning("Kling poll HTTP %s: %s", resp.status_code, resp.text[:300])
+                break
+
+            try:
+                done_url = _kling_poll_parse_response(data)
+            except KlingVideoError:
+                raise
+            if done_url:
+                return done_url
+            break
+
+        if not got_non404:
+            if chosen_url is not None:
+                logger.warning(
+                    "Kling poll previous status URL returned 404; rediscovering (was %s)",
+                    chosen_url,
+                )
+                chosen_url = None
+            consec_all_404 += 1
+            logger.warning(
+                "Kling poll no non-404 status URL for task %s (streak=%s)",
+                task_id,
+                consec_all_404,
+            )
+            if consec_all_404 >= 4:
+                raise KlingVideoError(
+                    f"Kling task status not found (404) for id {task_id}. "
+                    "Set KLING_POLL_PATH in .env (path only, with placeholder). Example for image-to-video: "
+                    "KLING_POLL_PATH=/v1/videos/image2video/{task_id}"
+                )
             continue
 
-        st = _extract_status_str(data)
-        if _status_is_failed(st):
-            raise KlingVideoError(_fail_reason(data))
-        if _status_is_success(st):
-            video_url = _extract_video_url(data)
-            if video_url:
-                return video_url
-            # Some APIs report success before URL is present — keep polling
-        # numeric status codes (useapi-style): status_final + works
-        task = _unwrap_payload(data).get("task")
-        if isinstance(task, dict) and str(task.get("status_name", "")).lower() in (
-            "succeed",
-            "success",
-        ):
-            video_url = _extract_video_url(data)
-            if video_url:
-                return video_url
+        consec_all_404 = 0
 
     raise KlingVideoError(
         f"Kling task {task_id} timed out after {attempts * interval:.0f}s (last poll)"
@@ -324,7 +410,7 @@ async def generate_kling_mp4(
     async with httpx.AsyncClient(timeout=timeout) as client:
         task_id = await _kling_create_task(client, settings, path, body)
         logger.info("Kling task created: %s", task_id)
-        video_url = await _kling_poll_task(client, settings, task_id)
+        video_url = await _kling_poll_task(client, settings, task_id, task_kind)
         if not video_url:
             raise KlingVideoError("Kling completed but no video URL was returned")
         await _download_mp4(client, video_url, out_path)

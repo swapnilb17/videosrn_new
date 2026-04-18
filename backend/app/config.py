@@ -159,6 +159,8 @@ class Settings(BaseSettings):
     kling_max_poll_attempts: int = Field(default=90, validation_alias="KLING_MAX_POLL_ATTEMPTS")
     kling_http_timeout: float = Field(default=120.0, validation_alias="KLING_HTTP_TIMEOUT")
     kling_jwt_ttl_sec: int = Field(default=1800, validation_alias="KLING_JWT_TTL_SEC")
+    # Optional status URL path with {task_id}, e.g. /v1/videos/text2video/{task_id} — use when your host 404s /v1/videos/{task_id}.
+    kling_poll_path: str = Field(default="", validation_alias="KLING_POLL_PATH")
 
     nano_banana_api_key: str = Field(default="", validation_alias="NANO_BANANA_API_KEY")
     nano_banana_base_url: str = Field(
