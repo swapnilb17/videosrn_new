@@ -60,15 +60,34 @@ export class ApiError extends Error {
   }
 }
 
+function extractErrorDetail(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as Record<string, unknown>;
+  const d = b.detail;
+  if (typeof d === "string" && d.trim()) return d;
+  if (Array.isArray(d)) {
+    const parts = d
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const o = item as Record<string, unknown>;
+          if (typeof o.msg === "string" && o.msg.trim()) return o.msg;
+        }
+        return "";
+      })
+      .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+  if (typeof b.error === "string" && b.error.trim()) return b.error;
+  return null;
+}
+
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try {
-      const body = await res.json();
-      detail =
-        (typeof body.detail === "string" && body.detail) ||
-        (typeof body.error === "string" && body.error) ||
-        detail;
+      const body: unknown = await res.json();
+      detail = extractErrorDetail(body) || detail;
     } catch {
       /* ignore parse failures */
     }

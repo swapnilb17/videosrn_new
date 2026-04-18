@@ -2235,6 +2235,7 @@ async def api_generate_image(
 
 @app.post("/api/photo-to-video")
 async def api_photo_to_video(
+    request: Request,
     session: Annotated[AsyncSession | None, Depends(get_db_session)],
     task: Annotated[str, Form()] = "image_to_video",
     photo: Annotated[UploadFile | None, File()] = None,
@@ -2372,6 +2373,10 @@ async def api_photo_to_video(
     owner_email_for_media = (user_email or "").strip().lower()
     if not owner_email_for_media and charged_user is not None:
         owner_email_for_media = (charged_user.email or "").strip().lower()
+    if not owner_email_for_media:
+        sess_u = request.session.get("user")
+        if isinstance(sess_u, dict):
+            owner_email_for_media = (sess_u.get("email") or "").strip().lower()
     if getattr(app.state, "session_factory", None) is not None and not owner_email_for_media:
         raise HTTPException(
             status_code=422,

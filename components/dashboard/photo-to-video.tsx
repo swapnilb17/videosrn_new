@@ -193,6 +193,9 @@ export function PhotoToVideo() {
     }
 
     const fd = new FormData();
+    // Put file parts first — some multipart parsers pair fields more reliably.
+    if (imageMode && startFrame) fd.append("photo", startFrame);
+    if (imageMode && endFrame && videoModel !== "kling") fd.append("end_photo", endFrame);
     fd.append("task", task);
     fd.append("motion_prompt", prompt.trim());
     fd.append("duration", String(duration));
@@ -200,8 +203,6 @@ export function PhotoToVideo() {
     fd.append("aspect_ratio", aspect);
     fd.append("video_tier", videoTier);
     fd.append("video_model", videoModel);
-    if (imageMode && startFrame) fd.append("photo", startFrame);
-    if (imageMode && endFrame && videoModel !== "kling") fd.append("end_photo", endFrame);
     appendCreditIdentity(fd, userEmail, userId);
 
     try {
