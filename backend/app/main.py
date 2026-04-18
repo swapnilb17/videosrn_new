@@ -307,28 +307,44 @@ async def _run_photo_to_video_job(
                 )
             else:
                 assert image_bytes is not None
-                camera_desc = {
-                    "pan_left": "smooth camera pan from right to left",
-                    "pan_right": "smooth camera pan from left to right",
-                    "zoom_in": "slow cinematic zoom in towards the subject",
-                    "zoom_out": "slow cinematic zoom out revealing the full scene",
-                    "orbit": "smooth orbital camera movement around the subject",
-                    "dolly": "forward dolly movement towards the subject",
-                    "static": "static camera with subtle ambient motion in the scene",
-                }.get(camera_movement, "gentle camera movement")
-                prompt = f"Bring this photo to life with {camera_desc}."
-                if motion_text:
-                    prompt += f" {motion_text}."
-                prompt += " Photorealistic, cinematic quality, smooth natural motion."
-                video_path = await generate_kling_mp4(
-                    settings,
-                    task_kind="image_to_video",
-                    prompt=prompt,
-                    image_bytes=image_bytes,
-                    duration_seconds=duration,
-                    aspect_ratio=aspect_ratio,
-                    artifact_job_id=job_id,
-                )
+                if end_bytes is not None and len(end_bytes) >= 100:
+                    base = motion_text or (
+                        "Smooth, natural motion transitioning from the first frame to the last frame."
+                    )
+                    prompt = f"{base} Photorealistic, cinematic quality, coherent transition."
+                    video_path = await generate_kling_mp4(
+                        settings,
+                        task_kind="image_to_video",
+                        prompt=prompt,
+                        image_bytes=image_bytes,
+                        end_image_bytes=end_bytes,
+                        duration_seconds=duration,
+                        aspect_ratio=aspect_ratio,
+                        artifact_job_id=job_id,
+                    )
+                else:
+                    camera_desc = {
+                        "pan_left": "smooth camera pan from right to left",
+                        "pan_right": "smooth camera pan from left to right",
+                        "zoom_in": "slow cinematic zoom in towards the subject",
+                        "zoom_out": "slow cinematic zoom out revealing the full scene",
+                        "orbit": "smooth orbital camera movement around the subject",
+                        "dolly": "forward dolly movement towards the subject",
+                        "static": "static camera with subtle ambient motion in the scene",
+                    }.get(camera_movement, "gentle camera movement")
+                    prompt = f"Bring this photo to life with {camera_desc}."
+                    if motion_text:
+                        prompt += f" {motion_text}."
+                    prompt += " Photorealistic, cinematic quality, smooth natural motion."
+                    video_path = await generate_kling_mp4(
+                        settings,
+                        task_kind="image_to_video",
+                        prompt=prompt,
+                        image_bytes=image_bytes,
+                        duration_seconds=duration,
+                        aspect_ratio=aspect_ratio,
+                        artifact_job_id=job_id,
+                    )
         elif veo_task == "text_to_video":
             prompt = motion_text
             if "cinematic" not in prompt.lower():
@@ -2304,12 +2320,6 @@ async def api_photo_to_video(
             end_raw = await end_photo.read()
             if len(end_raw) >= 100:
                 end_bytes = end_raw
-
-    if video_provider == "kling" and end_bytes:
-        raise HTTPException(
-            status_code=422,
-            detail="End frame is only available with Veo 3.1 Lite. Remove the end frame or switch model.",
-        )
 
     snap_d = _kling_dur_snap(duration) if video_provider == "kling" else _veo_duration_seconds(duration)
     is_1080 = (video_tier or "1080").strip().lower() != "720"

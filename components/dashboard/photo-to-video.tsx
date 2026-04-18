@@ -66,7 +66,7 @@ const VIDEO_MODELS = [
   {
     value: "kling",
     label: "Kling AI",
-    hint: "Strong image-to-video; duration snaps to 5s or 10s. End frame requires Veo.",
+    hint: "Strong image-to-video; duration snaps to 5s or 10s. Optional end frame uses pro mode where supported.",
   },
   {
     value: "veo_lite",
@@ -138,12 +138,6 @@ export function PhotoToVideo() {
     };
   }, []);
 
-  useEffect(() => {
-    if (videoModel === "kling") {
-      setEnd(null);
-    }
-  }, [videoModel]);
-
   const hasEndFrame = Boolean(endFrame);
   const imageMode = task === "image_to_video";
 
@@ -198,7 +192,7 @@ export function PhotoToVideo() {
     const fd = new FormData();
     // Put file parts first — some multipart parsers pair fields more reliably.
     if (imageMode && startFrame) fd.append("photo", startFrame);
-    if (imageMode && endFrame && videoModel !== "kling") fd.append("end_photo", endFrame);
+    if (imageMode && endFrame) fd.append("end_photo", endFrame);
     fd.append("task", task);
     fd.append(
       "motion_prompt",
@@ -397,17 +391,11 @@ export function PhotoToVideo() {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => {
-                        if (videoModel === "kling") return;
-                        endRef.current?.click();
-                      }}
-                      disabled={videoModel === "kling"}
-                      className={`${FRAME_BOX} text-slate-500 ${videoModel === "kling" ? "cursor-not-allowed opacity-50" : ""}`}
+                      onClick={() => endRef.current?.click()}
+                      className={`${FRAME_BOX} text-slate-500`}
                     >
                       <ImageIcon className="h-8 w-8 opacity-70" />
-                      <span className="text-sm">
-                        End {videoModel === "kling" ? "(Veo only)" : "(optional)"}
-                      </span>
+                      <span className="text-sm">End (optional)</span>
                     </button>
                   )}
                   <input
@@ -518,11 +506,13 @@ export function PhotoToVideo() {
           </ClayButton>
 
           <p className="text-xs text-slate-500">
-            Start + end frame uses Veo on Vertex only. Configure Kling keys in the backend
-            (<code className="rounded bg-white/10 px-1">KLING_API_KEY</code> or{" "}
+            Start + optional end frame: Veo on Vertex, or Kling (sends{" "}
+            <code className="rounded bg-white/10 px-1">image_tail</code> — provider must support
+            it for your model). Configure Kling:{" "}
+            <code className="rounded bg-white/10 px-1">KLING_API_KEY</code> or{" "}
             <code className="rounded bg-white/10 px-1">KLING_ACCESS_KEY</code> +{" "}
             <code className="rounded bg-white/10 px-1">KLING_SECRET_KEY</code>
-            ); optional <code className="rounded bg-white/10 px-1">KLING_BASE_URL</code>,{" "}
+            ; optional <code className="rounded bg-white/10 px-1">KLING_BASE_URL</code>,{" "}
             <code className="rounded bg-white/10 px-1">KLING_MODEL</code>.
           </p>
         </Card>

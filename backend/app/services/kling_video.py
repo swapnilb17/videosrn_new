@@ -4,8 +4,10 @@ Supports:
 - Single API key with ``Authorization: Bearer`` (e.g. gateway at api.klingapi.com).
 - Official-style AccessKey + SecretKey: HS256 JWT Bearer (api.klingai.com).
 
-Create uses ``/v1/videos/text2video`` and ``/v1/videos/image2video``. Status polling tries
-several ``GET`` paths (and optional ``KLING_POLL_PATH``) because gateways differ.
+Create uses ``/v1/videos/text2video`` and ``/v1/videos/image2video``. For start+end frame,
+the same image2video route sends an additional ``image_tail`` (base64, same encoding as
+``image``). Gateways vary; if create fails, check provider docs for frames-specific paths.
+Status polling tries several ``GET`` paths (and optional ``KLING_POLL_PATH``) because gateways differ.
 """
 
 from __future__ import annotations
@@ -366,6 +368,7 @@ async def generate_kling_mp4(
     task_kind: Literal["text_to_video", "image_to_video"],
     prompt: str,
     image_bytes: bytes | None,
+    end_image_bytes: bytes | None = None,
     duration_seconds: int,
     aspect_ratio: str,
     artifact_job_id: str,
@@ -374,6 +377,9 @@ async def generate_kling_mp4(
 
     model = (settings.kling_model or "").strip() or "kling-v2-5-turbo"
     mode = _kling_mode_for_api(settings.kling_mode)
+    if end_image_bytes and len(end_image_bytes) >= 100:
+        # Many Kling tiers require pro mode when an end frame is supplied.
+        mode = "pro"
     dur = kling_duration_seconds(duration_seconds)
     job_id = (artifact_job_id or "").strip().lower()
     if len(job_id) != 12 or any(c not in "0123456789abcdef" for c in job_id):
@@ -395,6 +401,9 @@ async def generate_kling_mp4(
             "aspect_ratio": aspect_ratio,
             "mode": mode,
         }
+        if end_image_bytes and len(end_image_bytes) >= 100:
+            body["image_tail"] = base64.b64encode(end_image_bytes).decode("ascii")
+            logger.info("Kling image2video: start + end frame (image_tail)")
         path = "/v1/videos/image2video"
     else:
         body = {
