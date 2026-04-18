@@ -2372,9 +2372,13 @@ async def api_photo_to_video(
         charged_user = locked
 
     # Resolve library owner while request-scoped DB session is still open (same as credits row).
+    # When credits run, prefer User.email from DB: get_or_create_user may match google_sub to an
+    # existing row whose email differs from the form (Media Library lists by NextAuth email = DB email).
     owner_email_for_media = (user_email or "").strip().lower()
-    if not owner_email_for_media and charged_user is not None:
-        owner_email_for_media = (charged_user.email or "").strip().lower()
+    if charged_user is not None:
+        ce = (charged_user.email or "").strip().lower()
+        if ce:
+            owner_email_for_media = ce
     if not owner_email_for_media:
         sess_u = request.session.get("user")
         if isinstance(sess_u, dict):
