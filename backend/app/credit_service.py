@@ -30,11 +30,15 @@ VEO_LITE_CREDITS_PER_SECOND_1080 = 25
 STARTER_REDEEM_CODE = "enably499"
 
 # Shared credit promo codes — each string may be redeemed once globally (first account wins).
+# Input is normalized (lowercase, no spaces) — e.g. Enably2500 → enably2500.
 PROMO_CREDIT_CODES: dict[str, int] = {
-    "enably2000": 2000,
+    "enably700": 700,
     "enably1000": 1000,
     "enably1500": 1500,
-    "enably700": 700,
+    "enably2000": 2000,
+    "enably2100": 2100,
+    "enably2500": 2500,
+    "enably5000": 5000,
 }
 
 PLAN_FREE = "free"
