@@ -62,6 +62,19 @@ const TASKS = [
   { value: "image_to_video", label: "Image-to-video" },
 ] as const;
 
+const VIDEO_MODELS = [
+  {
+    value: "kling",
+    label: "Kling AI",
+    hint: "Strong image-to-video; duration snaps to 5s or 10s. End frame requires Veo.",
+  },
+  {
+    value: "veo_lite",
+    label: "Veo 3.1 Lite",
+    hint: "Vertex AI; 4 / 6 / 8s, start+end frame supported.",
+  },
+] as const;
+
 const INPUT_CLS =
   "w-full rounded-xl border border-white/15 bg-[#0d1020] p-2.5 text-sm outline-none transition focus:ring-2 focus:ring-purple-400/40";
 
@@ -95,6 +108,8 @@ export function PhotoToVideo() {
   const startRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLInputElement>(null);
   const [task, setTask] = useState<(typeof TASKS)[number]["value"]>("image_to_video");
+  const [videoModel, setVideoModel] =
+    useState<(typeof VIDEO_MODELS)[number]["value"]>("kling");
   const [startFrame, setStartFrame] = useState<File | null>(null);
   const [startPreview, setStartPreview] = useState<string | null>(null);
   const [endFrame, setEndFrame] = useState<File | null>(null);
@@ -119,6 +134,12 @@ export function PhotoToVideo() {
       if (longWaitTimerRef.current) clearTimeout(longWaitTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (videoModel === "kling") {
+      setEnd(null);
+    }
+  }, [videoModel]);
 
   const hasEndFrame = Boolean(endFrame);
   const imageMode = task === "image_to_video";
@@ -178,8 +199,9 @@ export function PhotoToVideo() {
     fd.append("camera_movement", camera);
     fd.append("aspect_ratio", aspect);
     fd.append("video_tier", videoTier);
+    fd.append("video_model", videoModel);
     if (imageMode && startFrame) fd.append("photo", startFrame);
-    if (imageMode && endFrame) fd.append("end_photo", endFrame);
+    if (imageMode && endFrame && videoModel !== "kling") fd.append("end_photo", endFrame);
     appendCreditIdentity(fd, userEmail, userId);
 
     try {
@@ -244,8 +266,28 @@ export function PhotoToVideo() {
         <Card className="max-h-[calc(100vh-140px)] space-y-4 overflow-y-auto">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Clapperboard className="h-5 w-5 text-blue-400" />
-            Veo 3.1 Lite
+            Image to video
           </h2>
+
+          <fieldset className="space-y-1.5 rounded-xl border border-violet-400/40 px-3 pb-3 pt-1">
+            <legend className="px-1 text-xs font-medium text-violet-300/90">Model</legend>
+            <select
+              className={INPUT_CLS}
+              value={videoModel}
+              onChange={(e) =>
+                setVideoModel(e.target.value as (typeof VIDEO_MODELS)[number]["value"])
+              }
+            >
+              {VIDEO_MODELS.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-500">
+              {VIDEO_MODELS.find((m) => m.value === videoModel)?.hint}
+            </p>
+          </fieldset>
 
           <fieldset className="space-y-1.5 rounded-xl border border-sky-400/50 px-3 pb-3 pt-1">
             <legend className="px-1 text-xs font-medium text-sky-300/90">Task</legend>
@@ -343,11 +385,17 @@ export function PhotoToVideo() {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => endRef.current?.click()}
-                      className={`${FRAME_BOX} text-slate-500`}
+                      onClick={() => {
+                        if (videoModel === "kling") return;
+                        endRef.current?.click();
+                      }}
+                      disabled={videoModel === "kling"}
+                      className={`${FRAME_BOX} text-slate-500 ${videoModel === "kling" ? "cursor-not-allowed opacity-50" : ""}`}
                     >
                       <ImageIcon className="h-8 w-8 opacity-70" />
-                      <span className="text-sm">End (optional)</span>
+                      <span className="text-sm">
+                        End {videoModel === "kling" ? "(Veo only)" : "(optional)"}
+                      </span>
                     </button>
                   )}
                   <input
@@ -396,7 +444,11 @@ export function PhotoToVideo() {
                 </option>
               ))}
             </select>
-            <p className="text-xs text-slate-500">Veo uses 4, 6, or 8 seconds.</p>
+            <p className="text-xs text-slate-500">
+              {videoModel === "kling"
+                ? "Kling output snaps to 5s or 10s (closest to your selection)."
+                : "Veo uses 4, 6, or 8 seconds."}
+            </p>
           </div>
 
           <div className="space-y-1.5">
@@ -454,8 +506,12 @@ export function PhotoToVideo() {
           </ClayButton>
 
           <p className="text-xs text-slate-500">
-            Image-to-video with start + end uses Veo first-and-last-frame generation on Vertex
-            AI (same service account as other Veo calls).
+            Start + end frame uses Veo on Vertex only. Configure Kling keys in the backend
+            (<code className="rounded bg-white/10 px-1">KLING_API_KEY</code> or{" "}
+            <code className="rounded bg-white/10 px-1">KLING_ACCESS_KEY</code> +{" "}
+            <code className="rounded bg-white/10 px-1">KLING_SECRET_KEY</code>
+            ); optional <code className="rounded bg-white/10 px-1">KLING_BASE_URL</code>,{" "}
+            <code className="rounded bg-white/10 px-1">KLING_MODEL</code>.
           </p>
         </Card>
 
@@ -479,7 +535,10 @@ export function PhotoToVideo() {
           {generating && (
             <div className="flex min-h-[300px] flex-col items-center justify-center rounded-2xl border border-white/10 bg-gradient-to-br from-blue-500/10 via-cyan-500/5 to-purple-400/5 p-12 text-center">
               <Loader2 className="mb-4 h-12 w-12 animate-spin text-blue-400" />
-              <p className="font-medium text-slate-300">Creating your video with Veo…</p>
+              <p className="font-medium text-slate-300">
+                Creating your video with{" "}
+                {videoModel === "kling" ? "Kling…" : "Veo…"}
+              </p>
               <p className="mt-1 text-xs text-slate-500">Often 2–5 minutes.</p>
               {longWaitHint && (
                 <div className="mt-6 max-w-sm rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-left">

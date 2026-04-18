@@ -148,6 +148,18 @@ class Settings(BaseSettings):
         validation_alias="VERTEX_VEO_PERSON_GENERATION",
     )
 
+    # Kling AI video: KLING_API_KEY (Bearer) or KLING_ACCESS_KEY + KLING_SECRET_KEY (JWT for api.klingai.com).
+    kling_api_key: str = Field(default="", validation_alias="KLING_API_KEY")
+    kling_access_key: str = Field(default="", validation_alias="KLING_ACCESS_KEY")
+    kling_secret_key: str = Field(default="", validation_alias="KLING_SECRET_KEY")
+    kling_base_url: str = Field(default="", validation_alias="KLING_BASE_URL")
+    kling_model: str = Field(default="kling-v2-5-turbo", validation_alias="KLING_MODEL")
+    kling_mode: str = Field(default="professional", validation_alias="KLING_MODE")
+    kling_poll_interval_sec: float = Field(default=8.0, validation_alias="KLING_POLL_INTERVAL_SEC")
+    kling_max_poll_attempts: int = Field(default=90, validation_alias="KLING_MAX_POLL_ATTEMPTS")
+    kling_http_timeout: float = Field(default=120.0, validation_alias="KLING_HTTP_TIMEOUT")
+    kling_jwt_ttl_sec: int = Field(default=1800, validation_alias="KLING_JWT_TTL_SEC")
+
     nano_banana_api_key: str = Field(default="", validation_alias="NANO_BANANA_API_KEY")
     nano_banana_base_url: str = Field(
         default="https://api.nanobananaimages.com",
@@ -376,6 +388,19 @@ class Settings(BaseSettings):
 
     def nano_banana_configured(self) -> bool:
         return bool((self.nano_banana_api_key or "").strip())
+
+    def kling_configured(self) -> bool:
+        if (self.kling_api_key or "").strip():
+            return True
+        return bool((self.kling_access_key or "").strip() and (self.kling_secret_key or "").strip())
+
+    def kling_effective_base_url(self) -> str:
+        b = (self.kling_base_url or "").strip().rstrip("/")
+        if b:
+            return b
+        if (self.kling_api_key or "").strip():
+            return "https://api.klingapi.com"
+        return "https://api.klingai.com"
 
     def gemini_native_image_configured(self) -> bool:
         if not self.gemini_native_image_first:

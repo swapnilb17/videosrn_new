@@ -258,8 +258,10 @@ async def _run_photo_to_video_job(
     charged_user_id: uuid.UUID | None,
     veo_cost: int,
     owner_email_for_media: str,
+    video_provider: Literal["veo", "kling"] = "veo",
 ) -> None:
-    """Background Veo pipeline for /api/photo-to-video (avoids proxy timeouts on long requests)."""
+    """Background photo-to-video pipeline (Veo on Vertex or Kling API)."""
+    from app.services.kling_video import KlingVideoError, generate_kling_mp4, kling_duration_seconds
     from app.services.veo3_video import (
         _veo_duration_seconds,
         generate_video_from_image,
@@ -268,8 +270,14 @@ async def _run_photo_to_video_job(
     )
 
     settings = get_settings()
-    snap_d = _veo_duration_seconds(duration)
+    snap_d = (
+        kling_duration_seconds(duration)
+        if video_provider == "kling"
+        else _veo_duration_seconds(duration)
+    )
     veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
+    kling_model = (settings.kling_model or "").strip() or "kling-v2-5-turbo"
+    result_model = kling_model if video_provider == "kling" else veo_model
     session_factory = getattr(app.state, "session_factory", None)
 
     async def _fail(msg: str) -> None:
@@ -281,7 +289,45 @@ async def _run_photo_to_video_job(
         _job_results[job_id] = {"job_id": job_id, "status": "failed", "error": msg}
 
     try:
-        if veo_task == "text_to_video":
+        if video_provider == "kling":
+            if veo_task == "text_to_video":
+                prompt = motion_text
+                if "cinematic" not in prompt.lower():
+                    prompt += " Cinematic, photorealistic, smooth natural motion."
+                video_path = await generate_kling_mp4(
+                    settings,
+                    task_kind="text_to_video",
+                    prompt=prompt,
+                    image_bytes=None,
+                    duration_seconds=duration,
+                    aspect_ratio=aspect_ratio,
+                    artifact_job_id=job_id,
+                )
+            else:
+                assert image_bytes is not None
+                camera_desc = {
+                    "pan_left": "smooth camera pan from right to left",
+                    "pan_right": "smooth camera pan from left to right",
+                    "zoom_in": "slow cinematic zoom in towards the subject",
+                    "zoom_out": "slow cinematic zoom out revealing the full scene",
+                    "orbit": "smooth orbital camera movement around the subject",
+                    "dolly": "forward dolly movement towards the subject",
+                    "static": "static camera with subtle ambient motion in the scene",
+                }.get(camera_movement, "gentle camera movement")
+                prompt = f"Bring this photo to life with {camera_desc}."
+                if motion_text:
+                    prompt += f" {motion_text}."
+                prompt += " Photorealistic, cinematic quality, smooth natural motion."
+                video_path = await generate_kling_mp4(
+                    settings,
+                    task_kind="image_to_video",
+                    prompt=prompt,
+                    image_bytes=image_bytes,
+                    duration_seconds=duration,
+                    aspect_ratio=aspect_ratio,
+                    artifact_job_id=job_id,
+                )
+        elif veo_task == "text_to_video":
             prompt = motion_text
             if "cinematic" not in prompt.lower():
                 prompt += " Cinematic, photorealistic, smooth natural motion."
@@ -334,6 +380,9 @@ async def _run_photo_to_video_job(
                     veo_artifact_job_id=job_id,
                 )
     except Veo3Error as e:
+        await _fail(str(e))
+        return
+    except KlingVideoError as e:
         await _fail(str(e))
         return
     except Exception as e:
@@ -398,10 +447,11 @@ async def _run_photo_to_video_job(
                     extra={
                         "duration": int(snap_d),
                         "camera": str(camera_movement),
-                        "model": str(veo_model),
+                        "model": str(result_model),
                         "resolution": "1080p" if is_1080 else "720p",
                         "task": str(veo_task),
                         "end_frame": bool(end_bytes),
+                        "video_provider": video_provider,
                     },
                 )
             logger.info(
@@ -424,7 +474,7 @@ async def _run_photo_to_video_job(
         "video_width": pw,
         "video_height": ph,
         "duration_seconds": snap_d,
-        "model": veo_model,
+        "model": result_model,
     }
 
 
@@ -2196,11 +2246,29 @@ async def api_photo_to_video(
     user_email: Annotated[str, Form()] = "",
     user_sub: Annotated[str, Form()] = "",
     video_tier: Annotated[str, Form()] = "1080",
+    video_model: Annotated[str, Form()] = "veo_lite",
 ):
-    """Veo 3.1 Lite: text-to-video, image-to-video, or first+last-frame video (async job + poll)."""
+    """Text-to-video / image-to-video via Veo 3.1 Lite (Vertex) or Kling (async job + poll)."""
+    from app.services.kling_video import kling_duration_seconds as _kling_dur_snap
     from app.services.veo3_video import _veo_duration_seconds
 
     settings = get_settings()
+    vm = (video_model or "veo_lite").strip().lower().replace("-", "_")
+    if vm in ("veo", "veo_lite", "veo31", "veo_31_lite", "vertex"):
+        video_provider: Literal["veo", "kling"] = "veo"
+    elif vm in ("kling", "kling_ai"):
+        video_provider = "kling"
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="video_model must be veo_lite or kling",
+        )
+    if video_provider == "kling" and not settings.kling_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Kling is not configured (set KLING_API_KEY or KLING_ACCESS_KEY + KLING_SECRET_KEY).",
+        )
+
     raw_task = (task or "image_to_video").strip().lower().replace("-", "_")
     if raw_task in ("text", "text_to_video"):
         veo_task = "text_to_video"
@@ -2234,7 +2302,13 @@ async def api_photo_to_video(
             if len(end_raw) >= 100:
                 end_bytes = end_raw
 
-    snap_d = _veo_duration_seconds(duration)
+    if video_provider == "kling" and end_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail="End frame is only available with Veo 3.1 Lite. Remove the end frame or switch model.",
+        )
+
+    snap_d = _kling_dur_snap(duration) if video_provider == "kling" else _veo_duration_seconds(duration)
     is_1080 = (video_tier or "1080").strip().lower() != "720"
     veo_cost = veo_credits_for_seconds(snap_d, is_1080p=is_1080)
     charged_user: User | None = None
@@ -2258,13 +2332,20 @@ async def api_photo_to_video(
         locked = (
             await session.execute(select(User).where(User.id == cu.id).with_for_update())
         ).scalar_one()
-        debit_reason = (
-            "veo_text_to_video"
-            if veo_task == "text_to_video"
-            else "veo_frame_to_video"
-            if end_bytes
-            else "veo_photo_to_video"
-        )
+        if video_provider == "kling":
+            debit_reason = (
+                "kling_text_to_video"
+                if veo_task == "text_to_video"
+                else "kling_photo_to_video"
+            )
+        else:
+            debit_reason = (
+                "veo_text_to_video"
+                if veo_task == "text_to_video"
+                else "veo_frame_to_video"
+                if end_bytes
+                else "veo_photo_to_video"
+            )
         try:
             await deduct_credits(
                 session,
@@ -2276,6 +2357,7 @@ async def api_photo_to_video(
                     "tier": "1080" if is_1080 else "720",
                     "task": veo_task,
                     "end_frame": bool(end_bytes),
+                    "video_provider": video_provider,
                 },
             )
         except InsufficientCreditsError as e:
@@ -2312,6 +2394,7 @@ async def api_photo_to_video(
             charged_user_id=charged_user.id if charged_user is not None else None,
             veo_cost=veo_cost,
             owner_email_for_media=owner_email_for_media,
+            video_provider=video_provider,
         )
     )
     return JSONResponse(
