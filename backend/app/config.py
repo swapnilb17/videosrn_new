@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     kling_secret_key: str = Field(default="", validation_alias="KLING_SECRET_KEY")
     kling_base_url: str = Field(default="", validation_alias="KLING_BASE_URL")
     kling_model: str = Field(default="kling-v2-5-turbo", validation_alias="KLING_MODEL")
-    kling_mode: str = Field(default="professional", validation_alias="KLING_MODE")
+    kling_mode: str = Field(default="pro", validation_alias="KLING_MODE")
     kling_poll_interval_sec: float = Field(default=8.0, validation_alias="KLING_POLL_INTERVAL_SEC")
     kling_max_poll_attempts: int = Field(default=90, validation_alias="KLING_MAX_POLL_ATTEMPTS")
     kling_http_timeout: float = Field(default=120.0, validation_alias="KLING_HTTP_TIMEOUT")

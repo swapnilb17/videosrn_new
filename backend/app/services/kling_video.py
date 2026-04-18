@@ -71,10 +71,13 @@ def kling_duration_seconds(requested: int) -> int:
 
 
 def _kling_mode_for_api(raw: str) -> str:
-    m = (raw or "professional").strip().lower()
+    """Map env-friendly names to API values. Many Kling hosts expect ``pro`` / ``std``, not ``professional`` / ``standard``."""
+    m = (raw or "pro").strip().lower()
     if m in ("std", "standard", "fast"):
-        return "standard"
-    return "professional"
+        return "std"
+    if m in ("pro", "professional", "professional_mode", "hq", "high"):
+        return "pro"
+    return "pro"
 
 
 def _unwrap_payload(data: dict[str, Any]) -> dict[str, Any]:
