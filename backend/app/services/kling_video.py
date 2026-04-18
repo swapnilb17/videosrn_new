@@ -73,6 +73,17 @@ def kling_duration_seconds(requested: int) -> int:
     return 10 if r > 6 else 5
 
 
+def kling_image2video_duration(*, requested: int, end_image_bytes: bytes | None) -> int:
+    """Duration sent to Kling image2video.
+
+    When ``image_tail`` is set, several Kling hosts reject any value other than ``5``
+    (e.g. ``duration must be 5 when image_tail is not empty``).
+    """
+    if end_image_bytes is not None and len(end_image_bytes) >= 100:
+        return 5
+    return kling_duration_seconds(requested)
+
+
 def _kling_mode_for_api(raw: str) -> str:
     """Map env-friendly names to API values. Many Kling hosts expect ``pro`` / ``std``, not ``professional`` / ``standard``."""
     m = (raw or "pro").strip().lower()
@@ -380,7 +391,13 @@ async def generate_kling_mp4(
     if end_image_bytes and len(end_image_bytes) >= 100:
         # Many Kling tiers require pro mode when an end frame is supplied.
         mode = "pro"
-    dur = kling_duration_seconds(duration_seconds)
+    if task_kind == "image_to_video":
+        dur = kling_image2video_duration(
+            requested=duration_seconds,
+            end_image_bytes=end_image_bytes,
+        )
+    else:
+        dur = kling_duration_seconds(duration_seconds)
     job_id = (artifact_job_id or "").strip().lower()
     if len(job_id) != 12 or any(c not in "0123456789abcdef" for c in job_id):
         raise KlingVideoError("Invalid artifact job id for Kling output path")

@@ -66,7 +66,7 @@ const VIDEO_MODELS = [
   {
     value: "kling",
     label: "Kling AI",
-    hint: "Strong image-to-video; duration snaps to 5s or 10s. Optional end frame uses pro mode where supported.",
+    hint: "Strong image-to-video; 5s or 10s. With an end frame, output is 5s (Kling API).",
   },
   {
     value: "veo_lite",
@@ -446,7 +446,9 @@ export function PhotoToVideo() {
             </select>
             <p className="text-xs text-slate-500">
               {videoModel === "kling"
-                ? "Kling output snaps to 5s or 10s (closest to your selection)."
+                ? imageMode && hasEndFrame
+                  ? "Kling uses 5s output when an end frame is attached (API requirement)."
+                  : "Kling output snaps to 5s or 10s (closest to your selection)."
                 : "Veo uses 4, 6, or 8 seconds."}
             </p>
           </div>

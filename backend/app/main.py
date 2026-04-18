@@ -263,7 +263,12 @@ async def _run_photo_to_video_job(
     video_provider: Literal["veo", "kling"] = "veo",
 ) -> None:
     """Background photo-to-video pipeline (Veo on Vertex or Kling API)."""
-    from app.services.kling_video import KlingVideoError, generate_kling_mp4, kling_duration_seconds
+    from app.services.kling_video import (
+        KlingVideoError,
+        generate_kling_mp4,
+        kling_duration_seconds,
+        kling_image2video_duration,
+    )
     from app.services.veo3_video import (
         _veo_duration_seconds,
         generate_video_from_image,
@@ -272,11 +277,14 @@ async def _run_photo_to_video_job(
     )
 
     settings = get_settings()
-    snap_d = (
-        kling_duration_seconds(duration)
-        if video_provider == "kling"
-        else _veo_duration_seconds(duration)
-    )
+    if video_provider == "kling":
+        snap_d = (
+            kling_image2video_duration(requested=duration, end_image_bytes=end_bytes)
+            if veo_task == "image_to_video"
+            else kling_duration_seconds(duration)
+        )
+    else:
+        snap_d = _veo_duration_seconds(duration)
     veo_model = (settings.vertex_veo_model or "").strip() or VEO_MODEL_FALLBACK
     kling_model = (settings.kling_model or "").strip() or "kling-v2-5-turbo"
     result_model = kling_model if video_provider == "kling" else veo_model
@@ -2268,7 +2276,10 @@ async def api_photo_to_video(
     video_model: Annotated[str, Form()] = "veo_lite",
 ):
     """Text-to-video / image-to-video via Veo 3.1 Lite (Vertex) or Kling (async job + poll)."""
-    from app.services.kling_video import kling_duration_seconds as _kling_dur_snap
+    from app.services.kling_video import (
+        kling_duration_seconds as _kling_dur_snap,
+        kling_image2video_duration,
+    )
     from app.services.veo3_video import _veo_duration_seconds
 
     settings = get_settings()
@@ -2321,7 +2332,14 @@ async def api_photo_to_video(
             if len(end_raw) >= 100:
                 end_bytes = end_raw
 
-    snap_d = _kling_dur_snap(duration) if video_provider == "kling" else _veo_duration_seconds(duration)
+    if video_provider == "kling":
+        snap_d = (
+            kling_image2video_duration(requested=duration, end_image_bytes=end_bytes)
+            if veo_task == "image_to_video"
+            else _kling_dur_snap(duration)
+        )
+    else:
+        snap_d = _veo_duration_seconds(duration)
     is_1080 = (video_tier or "1080").strip().lower() != "720"
     veo_cost = veo_credits_for_seconds(snap_d, is_1080p=is_1080)
     charged_user: User | None = None
