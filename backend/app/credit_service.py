@@ -8,10 +8,19 @@ import re
 import uuid
 from typing import Any
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import CreditLedger, CreditPromoRedemption, RazorpayPayment, User
+from app.models import (
+    CreditCode,
+    CreditCodeRedemption,
+    CreditLedger,
+    CreditPromoRedemption,
+    RazorpayPayment,
+    User,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -420,12 +429,109 @@ async def _redeem_starter_normalized(session: AsyncSession, user: User) -> None:
     await session.flush()
 
 
+async def _lookup_admin_credit_code(
+    session: AsyncSession, code_normalized: str
+) -> CreditCode | None:
+    """Return the admin-issued code row for ``code_normalized`` if any."""
+    r = await session.execute(
+        select(CreditCode).where(CreditCode.code_normalized == code_normalized)
+    )
+    return r.scalar_one_or_none()
+
+
+def _admin_code_status(row: CreditCode) -> tuple[bool, str]:
+    """Return (is_redeemable, reason). reason is empty when redeemable."""
+    if not row.active:
+        return False, "deactivated"
+    if row.expires_at is not None and row.expires_at <= datetime.now(timezone.utc):
+        return False, "expired"
+    if row.max_redemptions and row.max_redemptions > 0:
+        if int(row.redeemed_count) >= int(row.max_redemptions):
+            return False, "exhausted"
+    return True, ""
+
+
+async def _user_already_redeemed_admin_code(
+    session: AsyncSession, code_normalized: str, user_id: uuid.UUID
+) -> bool:
+    r = await session.execute(
+        select(CreditCodeRedemption.code_normalized).where(
+            CreditCodeRedemption.code_normalized == code_normalized,
+            CreditCodeRedemption.user_id == user_id,
+        )
+    )
+    return r.scalar_one_or_none() is not None
+
+
+async def redeem_admin_credit_code(
+    session: AsyncSession, user: User, row: CreditCode
+) -> None:
+    """Redeem an admin-issued code for the given user.
+
+    Concurrency-safe: the unique (code, user) primary key on
+    ``credit_code_redemptions`` is the source of truth — concurrent
+    redemptions by the same user collapse into a single insert. The
+    parent counter is then bumped under the same transaction.
+    """
+    ok, reason = _admin_code_status(row)
+    if not ok:
+        msg = {
+            "deactivated": "This code has been deactivated.",
+            "expired": "This code has expired.",
+            "exhausted": "This code has reached its redemption limit.",
+        }.get(reason, "This code is not redeemable.")
+        raise ValueError(msg)
+
+    if await _user_already_redeemed_admin_code(session, row.code_normalized, user.id):
+        raise ValueError("You have already redeemed this code.")
+
+    try:
+        async with session.begin_nested():
+            session.add(
+                CreditCodeRedemption(
+                    code_normalized=row.code_normalized,
+                    user_id=user.id,
+                    credits_amount=int(row.credits_each),
+                )
+            )
+            await session.flush()
+    except IntegrityError as e:
+        raise ValueError("You have already redeemed this code.") from e
+
+    row.redeemed_count = int(row.redeemed_count) + 1
+    await add_credits(
+        session,
+        user,
+        int(row.credits_each),
+        reason="admin_credit_code",
+        meta={
+            "code": row.code,
+            "code_normalized": row.code_normalized,
+            "campaign": row.campaign,
+        },
+    )
+    user.plan = PLAN_STARTER
+    await session.flush()
+
+
 async def redeem_code(session: AsyncSession, user: User, code: str) -> None:
-    """Starter invite or single-use credit promo codes (normalized, case-insensitive)."""
+    """Starter invite, admin-issued, or legacy hardcoded credit promo codes.
+
+    Lookup order:
+      1. Admin-issued codes in the ``credit_codes`` table (newest path).
+      2. Legacy hardcoded ``PROMO_CREDIT_CODES`` (single-use globally).
+      3. Legacy ``STARTER_REDEEM_CODE`` invite.
+    """
     raw = (code or "").strip()
     if not raw:
         raise ValueError("code is required")
     normalized = normalize_redeem_code(raw)
+
+    admin_row = await _lookup_admin_credit_code(session, normalized)
+    if admin_row is not None:
+        await redeem_admin_credit_code(session, user, admin_row)
+        return
+
     if normalized in PROMO_CREDIT_CODES:
         await redeem_promo_credit_code(
             session, user, normalized, PROMO_CREDIT_CODES[normalized]
@@ -456,6 +562,48 @@ async def check_credit_code(
     if not raw:
         return {"ok": True, "valid": False, "reason": "empty", "message": "Enter a code"}
     normalized = normalize_redeem_code(raw)
+
+    admin_row = await _lookup_admin_credit_code(session, normalized)
+    if admin_row is not None:
+        ok, reason = _admin_code_status(admin_row)
+        already_user = await _user_already_redeemed_admin_code(
+            session, normalized, user.id
+        )
+        if already_user:
+            return {
+                "ok": True,
+                "valid": False,
+                "kind": "admin_code",
+                "credits": int(admin_row.credits_each),
+                "already_used_on_account": True,
+                "message": "You have already redeemed this code.",
+            }
+        if not ok:
+            msg = {
+                "deactivated": "This code has been deactivated.",
+                "expired": "This code has expired.",
+                "exhausted": "This code has reached its redemption limit.",
+            }.get(reason, "This code is not redeemable.")
+            return {
+                "ok": True,
+                "valid": False,
+                "kind": "admin_code",
+                "credits": int(admin_row.credits_each),
+                "reason": reason,
+                "message": msg,
+            }
+        return {
+            "ok": True,
+            "valid": True,
+            "kind": "admin_code",
+            "credits": int(admin_row.credits_each),
+            "campaign": admin_row.campaign,
+            "message": (
+                f"Valid — redeems {int(admin_row.credits_each)} credits "
+                f"and enables Starter (Veo) while you have balance."
+            ),
+        }
+
     if normalized in PROMO_CREDIT_CODES:
         amount = PROMO_CREDIT_CODES[normalized]
         taken = await _promo_code_already_redeemed(session, normalized)

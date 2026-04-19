@@ -107,6 +107,64 @@ class CreditLedger(Base):
     user: Mapped["User"] = relationship("User", back_populates="ledger_entries")
 
 
+class CreditCode(Base):
+    """Admin-issued credit code (catalog).
+
+    A row here describes a single user-facing code string. Redemptions are
+    tracked separately in :class:`CreditCodeRedemption` so multi-use codes
+    can be supported without losing history.
+    """
+
+    __tablename__ = "credit_codes"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    code_normalized: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    credits_each: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 0 means unlimited; default is single-use (matches legacy promo behaviour).
+    max_redemptions: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    redeemed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    campaign: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class CreditCodeRedemption(Base):
+    """One row per (code, user) successful redemption.
+
+    The composite primary key prevents the same user from redeeming the
+    same code twice. A unique constraint on the parent table guarantees
+    `code_normalized` matches at most one row in :class:`CreditCode`.
+    """
+
+    __tablename__ = "credit_code_redemptions"
+
+    code_normalized: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("credit_codes.code_normalized", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    credits_amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class MediaItem(Base):
     """Tracks every generated artifact (video, image, voice) per user for the media library."""
 
