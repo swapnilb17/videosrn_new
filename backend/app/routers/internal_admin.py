@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.credit_service import normalize_redeem_code
 from app.db import get_db_session
-from app.models import CreditCode, RazorpayPayment, User
+from app.models import CreditCode, CreditLedger, RazorpayPayment, User
 
 logger = logging.getLogger(__name__)
 
@@ -463,4 +463,161 @@ async def admin_deactivate_code(
         "active": False,
         "was_active": was_active,
         "redeemed_count": int(row.redeemed_count),
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /internal/admin/activity  (powers the Activity log page)
+# ---------------------------------------------------------------------------
+
+# Reasons emitted by the existing app code paths. Kept as a frozen catalogue
+# so the admin UI can show a stable filter dropdown and so we can classify
+# rows into grant / spend / refund without parsing strings client-side.
+#
+# When new reasons are added in `credit_service` / `main` / `credit_holds`,
+# add them here too — unknown reasons still render fine, they just default
+# to ``kind="other"`` and a humanised label.
+_REASON_KIND: dict[str, str] = {
+    "signup_grant": "grant",
+    "starter_redeem_grant": "grant",
+    "promo_code_grant": "grant",
+    "admin_credit_code": "grant",
+    "razorpay_starter_purchase": "grant",
+    "refund_failed_job": "refund",
+    "refund_veo_failed": "refund",
+    "standard_video": "spend",
+    "generate_image": "spend",
+    "veo_image_to_ad": "spend",
+    "tts_generate": "spend",
+}
+
+_REASON_LABEL: dict[str, str] = {
+    "signup_grant": "Signup credits",
+    "starter_redeem_grant": "Starter unlocked",
+    "promo_code_grant": "Legacy promo redeemed",
+    "admin_credit_code": "Admin code redeemed",
+    "razorpay_starter_purchase": "Razorpay payment captured",
+    "refund_failed_job": "Refund (failed job)",
+    "refund_veo_failed": "Refund (Veo failed)",
+    "standard_video": "Standard video",
+    "generate_image": "Image generated",
+    "veo_image_to_ad": "Veo image-to-ad",
+    "tts_generate": "TTS generated",
+}
+
+
+def _classify(reason: str, delta: int) -> tuple[str, str]:
+    kind = _REASON_KIND.get(reason)
+    if kind is None:
+        kind = "grant" if delta >= 0 else "spend"
+    label = _REASON_LABEL.get(reason, reason.replace("_", " ").title())
+    return kind, label
+
+
+@router.get("/activity")
+async def admin_activity_feed(
+    request: Request,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+    q: Annotated[str | None, Query(max_length=320)] = None,
+    reason: Annotated[str | None, Query(max_length=64)] = None,
+    kind: Annotated[str | None, Query(pattern="^(grant|spend|refund|other)$")] = None,
+) -> dict[str, Any]:
+    """Paginated activity feed sourced from `credit_ledger` + `users`.
+
+    This is intentionally read-only and uses the existing ledger table —
+    every monetary or usage event in the app already lands there, so no
+    new emit code (and no risk to existing flows) is needed to populate
+    it. The ledger is indexed on `user_id`; this endpoint orders by
+    ``created_at DESC`` with offset pagination, which stays cheap up to
+    a few million rows.
+
+    Filters:
+      * ``q``      — case-insensitive substring match on user email.
+      * ``reason`` — exact match against `credit_ledger.reason`.
+      * ``kind``   — one of ``grant`` / ``spend`` / ``refund`` / ``other``,
+                     translated to a set of concrete reasons server-side.
+    """
+    _require_internal_api_key(request)
+    db = _require_db(session)
+    page, page_size = _clamp_pagination(page, page_size)
+
+    base_filters = []
+    q_clean = (q or "").strip()
+    if q_clean:
+        like = f"%{q_clean.lower()}%"
+        base_filters.append(func.lower(User.email).like(like))
+    if reason:
+        base_filters.append(CreditLedger.reason == reason.strip())
+    if kind:
+        wanted = {r for r, k in _REASON_KIND.items() if k == kind}
+        if kind == "other":
+            known = set(_REASON_KIND.keys())
+            base_filters.append(~CreditLedger.reason.in_(known))
+        elif wanted:
+            base_filters.append(CreditLedger.reason.in_(wanted))
+        else:
+            # No reasons map to this kind yet — return an empty page.
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "reasons": sorted(_REASON_LABEL.keys()),
+            }
+
+    total_stmt = (
+        select(func.count())
+        .select_from(CreditLedger)
+        .join(User, User.id == CreditLedger.user_id)
+    )
+    if base_filters:
+        total_stmt = total_stmt.where(*base_filters)
+    total = int((await db.execute(total_stmt)).scalar() or 0)
+
+    rows_stmt = (
+        select(
+            CreditLedger.id,
+            CreditLedger.user_id,
+            CreditLedger.delta,
+            CreditLedger.balance_after,
+            CreditLedger.reason,
+            CreditLedger.meta,
+            CreditLedger.created_at,
+            User.email,
+        )
+        .join(User, User.id == CreditLedger.user_id)
+        .order_by(CreditLedger.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    if base_filters:
+        rows_stmt = rows_stmt.where(*base_filters)
+
+    rows = (await db.execute(rows_stmt)).all()
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        k, label = _classify(r.reason, int(r.delta))
+        items.append(
+            {
+                "id": str(r.id),
+                "user_id": str(r.user_id),
+                "user_email": r.email,
+                "delta": int(r.delta),
+                "balance_after": int(r.balance_after),
+                "reason": r.reason,
+                "kind": k,
+                "label": label,
+                "meta": r.meta,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+        )
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "reasons": sorted(_REASON_LABEL.keys()),
     }
