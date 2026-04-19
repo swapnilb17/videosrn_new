@@ -212,6 +212,13 @@ if _oauth_bootstrap.google_oauth_enabled():
 
 app.include_router(google_auth_router)
 
+# Internal admin/observability read-only routes consumed by the separate
+# `enably-admin` Next.js console. All endpoints are guarded by the existing
+# internal API key (x-internal-api-key). See app/routers/internal_admin.py.
+from app.routers.internal_admin import router as _internal_admin_router  # noqa: E402
+
+app.include_router(_internal_admin_router)
+
 # In-memory tracker for async video jobs (status + result/error)
 _job_results: dict[str, dict] = {}
 

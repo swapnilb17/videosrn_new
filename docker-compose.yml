@@ -36,6 +36,8 @@ services:
       - /opt/enably/gcp-credentials:/secrets/gcp:ro
     expose:
       - "8000"
+    ports:
+      - "172.31.44.54:8000:8000"   # private-IP only; admin EC2 BFF
 
   frontend:
     build:
