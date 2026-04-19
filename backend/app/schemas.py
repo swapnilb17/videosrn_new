@@ -8,6 +8,13 @@ from pydantic import BaseModel, Field, model_validator
 class RedeemBody(BaseModel):
     code: str = Field(..., min_length=1, max_length=64)
 
+
+class RazorpayStarterConfirmBody(BaseModel):
+    payment_id: str = Field(..., min_length=8, max_length=64)
+    order_id: str = Field(..., min_length=8, max_length=64)
+    amount_paise: int = Field(..., gt=0, le=10_000_000)
+
+
 LanguageCode = Literal["en", "hi", "mr"]
 
 DialogueSpeaker = Literal["male", "female"]

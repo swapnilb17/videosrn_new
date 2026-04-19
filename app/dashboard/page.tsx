@@ -4,10 +4,17 @@ import Link from "next/link";
 import { Card } from "@/components/ui/card";
 import { projects } from "@/lib/mock-data";
 import { ProjectCard } from "@/components/dashboard/project-card";
+import { STARTER_BUNDLE_CREDIT_CAP } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
 export default function DashboardPage() {
-  const { creditsInfo } = useAuth();
+  const { creditsInfo, creditsError, creditsLoading } = useAuth();
+
+  const showPayStarter =
+    !creditsError &&
+    !creditsLoading &&
+    creditsInfo?.creditsEnabled === true &&
+    (creditsInfo?.balance ?? 0) < STARTER_BUNDLE_CREDIT_CAP;
 
   const planLabel = creditsInfo?.plan === "starter" ? "Starter" : "Free";
   const balanceLine =
@@ -47,6 +54,14 @@ export default function DashboardPage() {
               className="inline-block text-sm text-purple-300 hover:text-purple-200 hover:underline"
             >
               Redeem Starter code
+            </Link>
+          ) : null}
+          {showPayStarter ? (
+            <Link
+              href="/dashboard/settings#pay-starter"
+              className="inline-block text-sm text-emerald-300/90 hover:text-emerald-200 hover:underline"
+            >
+              Pay ₹499 for Starter (Razorpay)
             </Link>
           ) : null}
         </Card>

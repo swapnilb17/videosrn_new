@@ -38,6 +38,7 @@ from app.credit_service import (
     IMAGE_CREDITS_PER_IMAGE,
     InsufficientCreditsError,
     add_credits,
+    apply_razorpay_starter_purchase,
     can_use_premium_models,
     check_credit_code,
     deduct_credits,
@@ -56,7 +57,7 @@ from app.job_store import (
 )
 from app.media_store import media_insert, media_list_by_owner
 from app.models import User
-from app.schemas import GenerateResponse, LanguageCode, RedeemBody
+from app.schemas import GenerateResponse, LanguageCode, RazorpayStarterConfirmBody, RedeemBody
 from app.services.branding_logo import save_branding_logo_from_upload
 from app.services.user_assets import (
     normalize_address_form,
@@ -1108,6 +1109,43 @@ async def internal_credits_redeem(
         "ok": True,
         "plan": u.plan,
         "balance": u.credit_balance,
+    }
+
+
+@app.post("/internal/credits/razorpay-starter-confirm")
+async def internal_credits_razorpay_starter_confirm(
+    request: Request,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    body: RazorpayStarterConfirmBody,
+):
+    """Trusted: Next.js verifies Razorpay signature, then forwards payment ids (internal API key)."""
+    _require_internal_api_key(request, load_settings())
+    settings = load_settings()
+    if not settings.credits_billing_enabled():
+        raise HTTPException(status_code=503, detail="Credits billing is not enabled")
+    if session is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    email = (request.headers.get("x-user-email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="Missing user identity")
+    sub = (request.headers.get("x-user-sub") or "").strip() or None
+    u = await get_or_create_user(session, email=email, google_sub=sub)
+    try:
+        balance, plan = await apply_razorpay_starter_purchase(
+            session,
+            u,
+            payment_id=body.payment_id,
+            order_id=body.order_id,
+            amount_paise=body.amount_paise,
+        )
+        await session.commit()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.refresh(u)
+    return {
+        "ok": True,
+        "plan": plan,
+        "balance": balance,
     }
 
 

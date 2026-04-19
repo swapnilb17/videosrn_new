@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import CreditLedger, CreditPromoRedemption, User
+from app.models import CreditLedger, CreditPromoRedemption, RazorpayPayment, User
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,8 @@ VEO_LITE_CREDITS_PER_SECOND_720 = 15
 VEO_LITE_CREDITS_PER_SECOND_1080 = 25
 
 STARTER_REDEEM_CODE = "enably499"
+# Must match Razorpay order amount (₹499.00) — verified server-side on confirm.
+STARTER_RAZORPAY_AMOUNT_PAISE = 49900
 
 # Shared credit promo codes — each string may be redeemed once globally (first account wins).
 # Input is normalized (lowercase, no spaces) — e.g. Enably2500 → enably2500.
@@ -321,6 +323,84 @@ async def redeem_promo_credit_code(
     )
     user.plan = PLAN_STARTER
     await session.flush()
+
+
+async def apply_razorpay_starter_purchase(
+    session: AsyncSession,
+    user: User,
+    *,
+    payment_id: str,
+    order_id: str,
+    amount_paise: int,
+) -> tuple[int, str]:
+    """Grant Starter plan + top-up toward STARTER_CREDITS_TARGET for a verified Razorpay payment.
+
+    Idempotent: the same ``payment_id`` returns the current balance without double-granting.
+    Does not set ``starter_redeem_completed`` (invite codes stay independent).
+    """
+    if int(amount_paise) != STARTER_RAZORPAY_AMOUNT_PAISE:
+        raise ValueError("Invalid payment amount for Starter bundle")
+    pid = (payment_id or "").strip()
+    oid = (order_id or "").strip()
+    if not pid or not oid:
+        raise ValueError("payment_id and order_id are required")
+
+    existing = (
+        await session.execute(select(RazorpayPayment).where(RazorpayPayment.razorpay_payment_id == pid))
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.user_id != user.id:
+            raise ValueError("This payment is already associated with another account")
+        await session.refresh(user)
+        return int(user.credit_balance), user.plan
+
+    locked = await lock_user_for_update(session, user.id)
+    if locked is None:
+        raise ValueError("User not found")
+
+    dup = (
+        await session.execute(select(RazorpayPayment).where(RazorpayPayment.razorpay_payment_id == pid))
+    ).scalar_one_or_none()
+    if dup is not None:
+        if dup.user_id != locked.id:
+            raise ValueError("This payment is already associated with another account")
+        await session.refresh(locked)
+        return int(locked.credit_balance), locked.plan
+
+    try:
+        async with session.begin_nested():
+            session.add(
+                RazorpayPayment(
+                    razorpay_payment_id=pid,
+                    user_id=locked.id,
+                    order_id=oid,
+                    amount_paise=int(amount_paise),
+                )
+            )
+            await session.flush()
+    except IntegrityError as e:
+        dup2 = (
+            await session.execute(select(RazorpayPayment).where(RazorpayPayment.razorpay_payment_id == pid))
+        ).scalar_one_or_none()
+        if dup2 is None:
+            raise ValueError("Could not record payment — please retry or contact support") from e
+        if dup2.user_id != locked.id:
+            raise ValueError("This payment is already associated with another account") from e
+        await session.refresh(locked)
+        return int(locked.credit_balance), locked.plan
+
+    locked.plan = PLAN_STARTER
+    need = max(0, STARTER_CREDITS_TARGET - int(locked.credit_balance))
+    if need > 0:
+        await add_credits(
+            session,
+            locked,
+            need,
+            reason="razorpay_starter_purchase",
+            meta={"order_id": oid, "payment_id": pid},
+        )
+    await session.flush()
+    return int(locked.credit_balance), locked.plan
 
 
 async def _redeem_starter_normalized(session: AsyncSession, user: User) -> None:

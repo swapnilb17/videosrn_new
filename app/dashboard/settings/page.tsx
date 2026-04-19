@@ -4,10 +4,17 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError, checkCreditCode, redeemStarterCode } from "@/lib/api";
+import { RazorpayStarterButton } from "@/components/billing/razorpay-starter-button";
+import {
+  ApiError,
+  STARTER_BUNDLE_CREDIT_CAP,
+  checkCreditCode,
+  redeemStarterCode,
+} from "@/lib/api";
 
 export default function SettingsPage() {
-  const { credits, creditsInfo, creditsLoading, creditsError, refreshCredits } = useAuth();
+  const { credits, creditsInfo, creditsLoading, creditsError, refreshCredits, userEmail, userName } =
+    useAuth();
   const [code, setCode] = useState("");
   const [redeemMsg, setRedeemMsg] = useState<string | null>(null);
   const [redeeming, setRedeeming] = useState(false);
@@ -67,6 +74,12 @@ export default function SettingsPage() {
   const planLabel =
     creditsInfo?.plan === "starter" ? "Starter" : "Free";
 
+  const showRazorpayStarter =
+    !creditsError &&
+    !creditsLoading &&
+    creditsInfo?.creditsEnabled === true &&
+    credits < STARTER_BUNDLE_CREDIT_CAP;
+
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-semibold">Settings</h1>
@@ -119,6 +132,21 @@ export default function SettingsPage() {
           </p>
         ) : null}
       </Card>
+
+      {showRazorpayStarter ? (
+        <Card id="pay-starter" className="space-y-3 p-4 scroll-mt-8">
+          <p className="text-lg font-semibold">Pay for Starter (₹499)</p>
+          <p className="text-sm text-slate-300">
+            Unlock the Starter plan and top your balance up toward {STARTER_BUNDLE_CREDIT_CAP} credits
+            (same bundle as the invite code). Use a card, UPI, or other methods supported by Razorpay.
+          </p>
+          <RazorpayStarterButton
+            userEmail={userEmail}
+            userName={userName}
+            onPaid={() => refreshCredits()}
+          />
+        </Card>
+      ) : null}
 
       <Card className="space-y-3 p-4">
         <p className="text-lg font-semibold">Invite &amp; credit codes</p>

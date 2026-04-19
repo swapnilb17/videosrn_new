@@ -41,6 +41,27 @@ class User(Base):
     )
 
 
+class RazorpayPayment(Base):
+    """Recorded Razorpay payment_ids for idempotent Starter bundle grants."""
+
+    __tablename__ = "razorpay_payments"
+
+    razorpay_payment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    order_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class CreditPromoRedemption(Base):
     """One row per promo code string — first successful redeem wins (global single-use)."""
 

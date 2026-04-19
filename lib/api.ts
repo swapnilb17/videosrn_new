@@ -226,6 +226,36 @@ export async function checkCreditCode(code: string): Promise<CheckCreditCodeResp
   return handleResponse<CheckCreditCodeResponse>(res);
 }
 
+/** Matches backend `STARTER_CREDITS_TARGET` — used for pay CTA gating only. */
+export const STARTER_BUNDLE_CREDIT_CAP = 500;
+
+export async function createRazorpayStarterOrder(): Promise<{
+  keyId: string;
+  orderId: string;
+  amount: number;
+  currency: string;
+}> {
+  const res = await fetch("/api/billing/razorpay/create-order", {
+    method: "POST",
+    credentials: "include",
+  });
+  return handleResponse(res);
+}
+
+export async function verifyRazorpayStarterPayment(payload: {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}): Promise<{ ok: boolean; plan: string; balance: number }> {
+  const res = await fetch("/api/billing/razorpay/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    credentials: "include",
+  });
+  return handleResponse(res);
+}
+
 export type GenerateImageResponse = {
   job_id: string;
   images: { url: string; width: number; height: number; model: string }[];
