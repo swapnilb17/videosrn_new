@@ -1,6 +1,6 @@
 # Enably Admin Console — Living Context
 
-_Last updated: 2026-04-19 after shipping Credit codes + Activity log. Templates in progress._
+_Last updated: 2026-04-21 after shipping Templates (incl. server-side video poster thumbnails)._
 
 This doc is the single source of truth for the admin/observability console
 project. Every future session should read this first, then only dive into
@@ -280,11 +280,56 @@ User dashboard (`EnablyAI_VGEN`, commit `9cc45c3`):
 Storage:
 - Bucket: existing `videosrv` in `ap-south-1`.
 - Prefix: `templates/`.
-- Object key layout: `templates/<uuid>.<ext>`.
+- Object key layout: `templates/<uuid>.<ext>`. Video templates also write a
+  sibling JPG poster at `templates/<uuid>.thumb.jpg` (see §7.1.1).
 - IAM: FastAPI EC2 role `ec2-learncast-s3` was extended with inline policy
   **`videosrv-templates-write`** granting `s3:PutObject`, `s3:GetObject`,
   `s3:DeleteObject` on `arn:aws:s3:::videosrv/templates/*`. Without this
   policy the upload endpoint returns 502 (botocore `AccessDenied`).
+
+#### 7.1.1 Video poster thumbnails (added 2026-04-21)
+
+Backend (`EnablyAI_VGEN`, commit `490b5cd`):
+- Migration `0009_template_thumbnails` adds nullable
+  `content_templates.thumbnail_s3_key` (no backfill required — column
+  null = no poster, clients fall back gracefully).
+- `internal_admin._extract_video_thumbnail()` shells out to
+  `ffmpeg -ss 0.5 -vframes 1 -vf scale='min(720,iw)':-2 -q:v 4` in a
+  temp dir to grab one JPG poster frame per uploaded video. ffmpeg is
+  already in the backend Docker image (used by slideshow_video etc.).
+  Failure is non-fatal — the upload still succeeds without a thumbnail.
+- The poster is uploaded to `templates/<uuid>.thumb.jpg` with the same
+  cache-control as the video; deletes also remove the sibling object.
+- Both `GET /internal/admin/templates` and `GET /api/templates/feed` now
+  return a presigned `thumbnail_url` alongside `preview_url` / `url`.
+- New `POST /internal/admin/templates/{id}/regenerate-thumbnail` lets
+  the admin backfill rows uploaded before this feature shipped or
+  refresh a poor auto-pick. Image templates 400 on this route.
+
+Admin app (`enably-admin`, commit `a8c1bc9`):
+- `<video poster={t.thumbnail_url}>` plus `src#t=0.5` fallback.
+- New "Add thumb" / "Refresh thumb" button per video card.
+
+User dashboard (`EnablyAI_VGEN`, commit `4000507`):
+- Templates gallery uses `poster=thumbnail_url` with `#t=0.5` fallback.
+- Media library video items now render an inline `<video preload="metadata"
+  src=URL#t=0.5>` instead of the static Film icon — gives an instant
+  poster for already-existing media without touching the video pipeline.
+
+Backfill recipe (run from inside the backend container if any old rows
+predate the feature; safe to re-run):
+
+```bash
+sudo docker compose exec -T backend python3 -c '
+import os, json, urllib.request as u
+S = os.environ["INTERNAL_API_SECRET"]; H = {"x-internal-api-key": S}
+def get(p): return json.loads(u.urlopen(u.Request("http://127.0.0.1:8000"+p, headers=H)).read())
+def post(p): return u.urlopen(u.Request("http://127.0.0.1:8000"+p, headers=H, method="POST")).read()
+for t in get("/internal/admin/templates?limit=500").get("items", []):
+    if t["kind"] == "video" and not t.get("thumbnail_s3_key"):
+        print("regen", t["id"], "->", post(f"/internal/admin/templates/{t[\"id\"]}/regenerate-thumbnail")[:120])
+'
+```
 
 ### 7.2 Backlog / nice-to-haves
 - Expose per-user ledger drilldown (`/users/<id>/activity`). Easy: reuse `listActivity` with `q=<email>`.
@@ -308,6 +353,10 @@ Storage:
 | enably-admin  | `a7ea447` | codes: list + deactivate UI, show generated codes once |
 | enably-admin  | `784a3cc` | activity: new Activity log page sourced from credit ledger |
 | enably-admin  | `11b0aa0` | templates: full CRUD UI backed by /internal/admin/templates |
+| enably-admin  | `3a56284` | templates: bump proxyClientMaxBodySize to 55mb for video uploads |
+| EnablyAI_VGEN | `490b5cd` | templates: server-side video thumbnails via ffmpeg (migration 0009) |
+| enably-admin  | `a8c1bc9` | templates: render server-extracted JPG poster on video cards |
+| EnablyAI_VGEN | `4000507` | templates + media: render real video thumbnails |
 
 ---
 
