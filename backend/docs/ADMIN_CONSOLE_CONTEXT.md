@@ -250,12 +250,41 @@ rm -f "$JAR"
 
 ## 7. Pending work
 
-### 7.1 Templates (in progress)
-Direction (confirmed by operator 2026-04-19):
-- **Reuse** the existing `EnablyAI_VGEN` S3 bucket.
-- New key prefix: `templates/`.
-- Admin EC2 IAM role already has S3 permissions to the bucket.
-- Migration number: **`0008_content_templates`** (0007 is taken by credit codes).
+### 7.1 Templates ✅ shipped 2026-04-19
+
+Backend (`EnablyAI_VGEN`, commits `908f42d` + `9cc45c3`):
+- New table `content_templates` (migration `0008_content_templates`).
+- `internal_admin.py` extended with `POST /internal/admin/templates/upload`,
+  `GET /internal/admin/templates`, `PATCH /internal/admin/templates/{id}`,
+  `POST /internal/admin/templates/{id}/publish`, `DELETE /internal/admin/templates/{id}`.
+- New router `templates_public.py` exposes `GET /api/templates/feed`
+  (unauthenticated, returns published templates with short-lived presigned
+  GET URLs). Wired into `main.py` via a single `app.include_router(...)`.
+- File caps: 10 MB images, 50 MB videos. Allowed MIME types are
+  `image/{png,jpeg,webp,gif}` + `video/{mp4,webm,quicktime}`.
+
+Admin app (`enably-admin`, commit `11b0aa0`):
+- `lib/admin-api.ts` adds `listTemplates`, `uploadTemplate`,
+  `updateTemplate`, `toggleTemplatePublish`, `deleteTemplate`.
+- `/templates` page: upload form + gallery grid with inline preview, publish
+  toggle, delete.
+- `next.config.ts`: `experimental.serverActions.bodySizeLimit = "55mb"`.
+- Nginx on admin EC2: `client_max_body_size 60m;` (was 25m).
+
+User dashboard (`EnablyAI_VGEN`, commit `9cc45c3`):
+- New `/dashboard/templates` route + `Sparkles` sidebar entry.
+- Client-side gallery (kind filter + search) backed by `/api/templates/feed`.
+- Hover-to-play video previews; lazy-loaded image previews.
+- No nginx changes needed — `/api/*` already proxies to FastAPI.
+
+Storage:
+- Bucket: existing `videosrv` in `ap-south-1`.
+- Prefix: `templates/`.
+- Object key layout: `templates/<uuid>.<ext>`.
+- IAM: FastAPI EC2 role `ec2-learncast-s3` was extended with inline policy
+  **`videosrv-templates-write`** granting `s3:PutObject`, `s3:GetObject`,
+  `s3:DeleteObject` on `arn:aws:s3:::videosrv/templates/*`. Without this
+  policy the upload endpoint returns 502 (botocore `AccessDenied`).
 
 ### 7.2 Backlog / nice-to-haves
 - Expose per-user ledger drilldown (`/users/<id>/activity`). Easy: reuse `listActivity` with `q=<email>`.
@@ -273,9 +302,12 @@ Direction (confirmed by operator 2026-04-19):
 | EnablyAI_VGEN | `020b27c` | Add read-only /internal/admin/* routes for observability console |
 | EnablyAI_VGEN | `84ce3e5` | admin: db-backed credit codes (catalog + redeem path) |
 | EnablyAI_VGEN | `742754a` | admin: add /internal/admin/activity feed sourced from credit_ledger |
+| EnablyAI_VGEN | `908f42d` | admin: content templates (upload + publish + public feed) |
+| EnablyAI_VGEN | `9cc45c3` | dashboard: Templates gallery backed by /api/templates/feed |
 | enably-admin  | `1f6c8f9` | Use X-Forwarded-Host for login/logout redirects |
 | enably-admin  | `a7ea447` | codes: list + deactivate UI, show generated codes once |
 | enably-admin  | `784a3cc` | activity: new Activity log page sourced from credit ledger |
+| enably-admin  | `11b0aa0` | templates: full CRUD UI backed by /internal/admin/templates |
 
 ---
 
@@ -288,6 +320,8 @@ Direction (confirmed by operator 2026-04-19):
 5. **Environment variables are validated lazily** via a `Proxy` in `lib/env.ts`. This is why `next build` in CI works without all secrets — but evaluation at request time must stay inside route handlers / Server Components (which is why all `(admin)` pages export `dynamic = "force-dynamic"`).
 6. **`docker-compose.yml` on FastAPI EC2:** the `ports: "172.31.44.54:8000:8000"` mapping on the `backend` service is **load-bearing** for admin connectivity. If you ever edit `docker-compose.yml`, preserve this stanza inside the existing `backend:` block (don't append a duplicate `backend:` at the end — that caused an outage once; see transcript).
 7. **BFF cache TTL is 60s.** After any admin write, the list below the form may lag by up to a minute. Operator can click **Refresh** on Overview to force-invalidate everything instantly.
+8. **Templates uploads need TWO body-size bumps.** Next.js Server Actions default to 1 MB and Nginx defaults to 1 MB; both must be raised. Currently set to `bodySizeLimit: "55mb"` (Next config) and `client_max_body_size 60m;` (`/etc/nginx/conf.d/enably-admin.conf` on admin EC2). If you ever raise the FastAPI cap (`_MAX_VIDEO_BYTES` in `internal_admin.py`), bump both of these in lock-step.
+9. **FastAPI EC2 IAM role `ec2-learncast-s3`** must include the inline policy `videosrv-templates-write` (PutObject/GetObject/DeleteObject on `arn:aws:s3:::videosrv/templates/*`). Without it template upload returns 502 with `AccessDenied`.
 
 ---
 
