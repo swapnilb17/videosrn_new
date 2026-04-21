@@ -320,7 +320,10 @@ Storage:
 5. **Environment variables are validated lazily** via a `Proxy` in `lib/env.ts`. This is why `next build` in CI works without all secrets — but evaluation at request time must stay inside route handlers / Server Components (which is why all `(admin)` pages export `dynamic = "force-dynamic"`).
 6. **`docker-compose.yml` on FastAPI EC2:** the `ports: "172.31.44.54:8000:8000"` mapping on the `backend` service is **load-bearing** for admin connectivity. If you ever edit `docker-compose.yml`, preserve this stanza inside the existing `backend:` block (don't append a duplicate `backend:` at the end — that caused an outage once; see transcript).
 7. **BFF cache TTL is 60s.** After any admin write, the list below the form may lag by up to a minute. Operator can click **Refresh** on Overview to force-invalidate everything instantly.
-8. **Templates uploads need TWO body-size bumps.** Next.js Server Actions default to 1 MB and Nginx defaults to 1 MB; both must be raised. Currently set to `bodySizeLimit: "55mb"` (Next config) and `client_max_body_size 60m;` (`/etc/nginx/conf.d/enably-admin.conf` on admin EC2). If you ever raise the FastAPI cap (`_MAX_VIDEO_BYTES` in `internal_admin.py`), bump both of these in lock-step.
+8. **Templates uploads need THREE body-size bumps.** All of these must be raised in lock-step with the FastAPI cap (`_MAX_VIDEO_BYTES` in `internal_admin.py`, currently 50 MB):
+   - `client_max_body_size 60m;` — `/etc/nginx/conf.d/enably-admin.conf` on admin EC2.
+   - `experimental.proxyClientMaxBodySize: "55mb"` — `next.config.ts`. This one is easy to miss: `proxy.ts` buffers bodies with a separate 10 MB default (distinct from the Server Action cap). Uploads > 10 MB silently truncate and surface as "Unexpected end of form" / the generic "server error" splash.
+   - `experimental.serverActions.bodySizeLimit: "55mb"` — `next.config.ts`.
 9. **FastAPI EC2 IAM role `ec2-learncast-s3`** must include the inline policy `videosrv-templates-write` (PutObject/GetObject/DeleteObject on `arn:aws:s3:::videosrv/templates/*`). Without it template upload returns 502 with `AccessDenied`.
 
 ---
