@@ -165,6 +165,44 @@ class CreditCodeRedemption(Base):
     )
 
 
+class ContentTemplate(Base):
+    """Admin-uploaded templates shown on user dashboards.
+
+    Files live in the main S3 bucket under the ``templates/`` prefix; the
+    object key is stored here and presigned for playback at read time.
+    """
+
+    __tablename__ = "content_templates"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # "image" | "video"
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    language: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    s3_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tags: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class MediaItem(Base):
     """Tracks every generated artifact (video, image, voice) per user for the media library."""
 

@@ -219,6 +219,13 @@ from app.routers.internal_admin import router as _internal_admin_router  # noqa:
 
 app.include_router(_internal_admin_router)
 
+# Public, unauthenticated templates feed for the user dashboard. Defined in a
+# standalone router so its surface area stays independent of the admin and
+# /generate code paths. Safe no-op when S3 is unconfigured.
+from app.routers.templates_public import router as _templates_public_router  # noqa: E402
+
+app.include_router(_templates_public_router)
+
 # In-memory tracker for async video jobs (status + result/error)
 _job_results: dict[str, dict] = {}
 
