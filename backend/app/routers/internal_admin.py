@@ -699,6 +699,67 @@ def _normalise_tags(raw: str | None) -> str | None:
     return ",".join(parts)[:256]
 
 
+def _extract_video_thumbnail(video_bytes: bytes, content_type: str) -> bytes | None:
+    """Run ffmpeg in a temp dir to grab a JPG poster frame from a video.
+
+    Returns the JPG bytes, or ``None`` if ffmpeg is unavailable / the input
+    is unreadable. Failure here never blocks the upload — the template will
+    just have no poster, and the UI falls back to a generic placeholder.
+    """
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    if shutil.which("ffmpeg") is None:
+        logger.warning("ffmpeg not on PATH; skipping template thumbnail extraction")
+        return None
+
+    suffix = {
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+        "video/quicktime": ".mov",
+    }.get((content_type or "").lower(), ".bin")
+
+    with tempfile.TemporaryDirectory(prefix="tplthumb-") as td:
+        tdir = Path(td)
+        src = tdir / f"src{suffix}"
+        out = tdir / "thumb.jpg"
+        src.write_bytes(video_bytes)
+        # Seek 0.5s in (skip black intro frames), grab one frame, scale to a
+        # gallery-friendly width while preserving aspect ratio. q:v 4 is a
+        # decent quality/size tradeoff (~30-80 KB per JPG).
+        cmd = [
+            "ffmpeg",
+            "-loglevel", "error",
+            "-y",
+            "-ss", "0.5",
+            "-i", str(src),
+            "-vframes", "1",
+            "-vf", "scale='min(720,iw)':-2",
+            "-q:v", "4",
+            str(out),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=30, check=False
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg thumbnail extraction timed out")
+            return None
+        if proc.returncode != 0 or not out.is_file():
+            logger.warning(
+                "ffmpeg thumbnail failed rc=%s err=%s",
+                proc.returncode,
+                (proc.stderr or b"").decode("utf-8", "ignore")[:200],
+            )
+            return None
+        try:
+            return out.read_bytes()
+        except OSError:
+            return None
+
+
 @router.post("/templates/upload", status_code=201)
 async def admin_upload_template(
     request: Request,
@@ -770,6 +831,25 @@ async def admin_upload_template(
             status_code=502, detail=f"S3 upload failed: {e}"
         ) from e
 
+    # Best-effort thumbnail for video uploads. Failure does NOT block the
+    # template — clients fall back to a placeholder.
+    thumb_key: str | None = None
+    if kind == "video":
+        thumb_bytes = _extract_video_thumbnail(payload, ct_raw)
+        if thumb_bytes:
+            thumb_key = f"{_TEMPLATES_S3_PREFIX}{template_id}.thumb.jpg"
+            try:
+                client.put_object(
+                    Bucket=bucket,
+                    Key=thumb_key,
+                    Body=thumb_bytes,
+                    ContentType="image/jpeg",
+                    CacheControl="public, max-age=86400",
+                )
+            except Exception:
+                logger.exception("Thumbnail upload failed key=%s", thumb_key)
+                thumb_key = None
+
     row = ContentTemplate(
         id=template_id,
         kind=kind,
@@ -778,6 +858,7 @@ async def admin_upload_template(
         category=(category or "").strip() or None,
         language=(language or "").strip().lower() or None,
         s3_key=s3_key,
+        thumbnail_s3_key=thumb_key,
         content_type=ct_raw,
         size_bytes=len(payload),
         tags=_normalise_tags(tags),
@@ -799,14 +880,19 @@ def _template_to_dict(
     include_preview: bool,
 ) -> dict[str, Any]:
     preview_url: str | None = None
+    thumbnail_url: str | None = None
     if include_preview:
-        try:
-            from app.services.s3_storage import safe_presign_get  # noqa: PLC0415
+        from app.services.s3_storage import safe_presign_get  # noqa: PLC0415
 
+        try:
             preview_url = safe_presign_get(settings, row.s3_key)
         except Exception:
             logger.exception("presign failed for %s", row.s3_key)
-            preview_url = None
+        if row.thumbnail_s3_key:
+            try:
+                thumbnail_url = safe_presign_get(settings, row.thumbnail_s3_key)
+            except Exception:
+                logger.exception("thumb presign failed for %s", row.thumbnail_s3_key)
     return {
         "id": str(row.id),
         "kind": row.kind,
@@ -815,6 +901,7 @@ def _template_to_dict(
         "category": row.category,
         "language": row.language,
         "s3_key": row.s3_key,
+        "thumbnail_s3_key": row.thumbnail_s3_key,
         "content_type": row.content_type,
         "size_bytes": int(row.size_bytes),
         "width": row.width,
@@ -824,6 +911,7 @@ def _template_to_dict(
         "published": bool(row.published),
         "sort_order": int(row.sort_order),
         "preview_url": preview_url,
+        "thumbnail_url": thumbnail_url,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -981,6 +1069,7 @@ async def admin_delete_template(
         raise HTTPException(status_code=404, detail="Template not found.")
 
     s3_key = row.s3_key
+    thumb_key = row.thumbnail_s3_key
     settings = _load_settings()
     bucket = (settings.s3_bucket or "").strip()
 
@@ -994,7 +1083,84 @@ async def admin_delete_template(
 
         client = s3_client(settings)
         client.delete_object(Bucket=bucket, Key=s3_key)
+        if thumb_key:
+            client.delete_object(Bucket=bucket, Key=thumb_key)
     except Exception:
         logger.exception("Template S3 delete failed (key=%s)", s3_key)
 
-    return {"id": str(template_id), "deleted": True, "s3_key": s3_key}
+    return {
+        "id": str(template_id),
+        "deleted": True,
+        "s3_key": s3_key,
+        "thumbnail_s3_key": thumb_key,
+    }
+
+
+@router.post("/templates/{template_id}/regenerate-thumbnail")
+async def admin_regen_thumbnail(
+    request: Request,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    template_id: Annotated[uuid.UUID, Path()],
+) -> dict[str, Any]:
+    """(Re)generate the poster JPG for a video template.
+
+    Used to backfill rows uploaded before the thumbnail feature shipped, or
+    to refresh a poor-quality auto-pick. Image templates return 400.
+    """
+    _require_internal_api_key(request)
+    db = _require_db(session)
+    row = (
+        await db.execute(
+            select(ContentTemplate).where(ContentTemplate.id == template_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Template not found.")
+    if row.kind != "video":
+        raise HTTPException(
+            status_code=400, detail="Thumbnails are only generated for videos."
+        )
+
+    settings = _load_settings()
+    bucket = (settings.s3_bucket or "").strip()
+    if not bucket:
+        raise HTTPException(status_code=503, detail="S3 is not configured.")
+
+    from app.services.s3_storage import s3_client  # noqa: PLC0415
+
+    client = s3_client(settings)
+    try:
+        obj = client.get_object(Bucket=bucket, Key=row.s3_key)
+        video_bytes = obj["Body"].read()
+    except Exception as e:
+        logger.exception("Template fetch from S3 failed (key=%s)", row.s3_key)
+        raise HTTPException(
+            status_code=502, detail=f"Could not read source video from S3: {e}"
+        ) from e
+
+    thumb = _extract_video_thumbnail(video_bytes, row.content_type)
+    if not thumb:
+        raise HTTPException(
+            status_code=500,
+            detail="ffmpeg could not extract a thumbnail from this video.",
+        )
+
+    thumb_key = f"{_TEMPLATES_S3_PREFIX}{row.id}.thumb.jpg"
+    try:
+        client.put_object(
+            Bucket=bucket,
+            Key=thumb_key,
+            Body=thumb,
+            ContentType="image/jpeg",
+            CacheControl="public, max-age=86400",
+        )
+    except Exception as e:
+        logger.exception("Thumbnail upload failed (key=%s)", thumb_key)
+        raise HTTPException(
+            status_code=502, detail=f"Thumbnail upload failed: {e}"
+        ) from e
+
+    row.thumbnail_s3_key = thumb_key
+    await db.commit()
+    await db.refresh(row)
+    return _template_to_dict(row, settings=settings, include_preview=True)

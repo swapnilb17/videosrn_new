@@ -78,6 +78,14 @@ async def templates_feed(
         except Exception:
             logger.exception("templates feed: presign failed key=%s", r.s3_key)
             continue
+        thumb_url: str | None = None
+        if r.thumbnail_s3_key:
+            try:
+                thumb_url = safe_presign_get(settings, r.thumbnail_s3_key)
+            except Exception:
+                logger.exception(
+                    "templates feed: thumb presign failed key=%s", r.thumbnail_s3_key
+                )
         items.append(
             {
                 "id": str(r.id),
@@ -92,6 +100,7 @@ async def templates_feed(
                 "duration_seconds": r.duration_seconds,
                 "tags": [t for t in (r.tags or "").split(",") if t],
                 "url": url,
+                "thumbnail_url": thumb_url,
             }
         )
     return {"items": items}

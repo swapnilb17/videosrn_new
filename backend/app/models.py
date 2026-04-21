@@ -181,6 +181,9 @@ class ContentTemplate(Base):
     category: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     language: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
     s3_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    # Optional sibling object holding a JPG poster frame for video templates.
+    # Always null for image templates (the asset is its own thumbnail).
+    thumbnail_s3_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     content_type: Mapped[str] = mapped_column(String(128), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
