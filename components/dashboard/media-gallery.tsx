@@ -228,10 +228,23 @@ export function MediaGallery() {
                 }
               >
                 {/* Thumbnail / type badge */}
-                <div className="relative flex h-36 items-center justify-center bg-gradient-to-br from-purple-500/15 via-blue-500/10 to-white/5">
-                  {item.media_type === "video" && (
+                <div className="relative flex h-36 items-center justify-center overflow-hidden bg-gradient-to-br from-purple-500/15 via-blue-500/10 to-white/5">
+                  {item.media_type === "video" && item.media_url ? (
+                    // Inline poster preview. We only ask for metadata + the
+                    // single frame at 0.5s (URL fragment) so the gallery
+                    // doesn't stream every video on render. No thumbnail
+                    // generation pipeline needed for already-existing items.
+                    // eslint-disable-next-line jsx-a11y/media-has-caption
+                    <video
+                      src={`${item.media_url}#t=0.5`}
+                      className="h-full w-full object-cover"
+                      muted
+                      playsInline
+                      preload="metadata"
+                    />
+                  ) : item.media_type === "video" ? (
                     <Film className="h-10 w-10 text-purple-300/60" />
-                  )}
+                  ) : null}
                   {item.media_type === "image" && item.media_url ? (
                     <img
                       src={item.media_url}

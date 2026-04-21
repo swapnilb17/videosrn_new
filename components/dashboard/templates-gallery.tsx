@@ -15,6 +15,7 @@ type FeedItem = {
   duration_seconds: number | null;
   tags: string[];
   url: string;
+  thumbnail_url?: string | null;
 };
 
 type FeedResponse = { items: FeedItem[] };
@@ -127,7 +128,10 @@ function TemplateCard({ t }: { t: FeedItem }) {
         {t.kind === "video" ? (
           // eslint-disable-next-line jsx-a11y/media-has-caption
           <video
-            src={t.url}
+            // Append #t=0.5 to coax the browser into showing a non-black
+            // first frame even when the JPG poster hasn't loaded yet.
+            src={`${t.url}#t=0.5`}
+            poster={t.thumbnail_url ?? undefined}
             className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]"
             muted
             loop
