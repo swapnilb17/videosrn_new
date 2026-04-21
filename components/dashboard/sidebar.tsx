@@ -13,11 +13,13 @@ import {
   Mic,
   Clapperboard,
   Megaphone,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const mainLinks = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
+  { href: "/dashboard/templates", label: "Templates", icon: Sparkles },
   { href: "/dashboard/media", label: "Media Library", icon: GalleryHorizontalEnd },
   { href: "/dashboard/projects", label: "Projects", icon: FolderKanban },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
