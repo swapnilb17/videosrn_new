@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
 import { RazorpayStarterButton } from "@/components/billing/razorpay-starter-button";
+import { UsageReport } from "@/components/billing/usage-report";
 import {
   ApiError,
   STARTER_BUNDLE_CREDIT_CAP,
@@ -132,6 +133,10 @@ export default function SettingsPage() {
           </p>
         ) : null}
       </Card>
+
+      <UsageReport
+        starterRedeemAvailable={creditsInfo?.starterRedeemAvailable}
+      />
 
       {showRazorpayStarter ? (
         <Card id="pay-starter" className="space-y-3 p-4 scroll-mt-8">

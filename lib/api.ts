@@ -189,6 +189,82 @@ export async function fetchCreditsMe(): Promise<CreditsMeResponse> {
   return handleResponse<CreditsMeResponse>(res);
 }
 
+export type UsageRange = "current_month" | "last_2_months" | "last_30_days" | "custom";
+
+export type UsageItem = {
+  id: string;
+  created_at: string | null;
+  user_query: string;
+  query_type: string;
+  unit_label: string;
+  count_or_seconds: number | null;
+  credits_consumed: number;
+  credits_granted: number;
+  delta: number;
+  balance_after: number;
+  kind: "grant" | "spend" | "refund" | "other";
+  reason: string;
+  label: string;
+};
+
+export type UsageSummary = {
+  period_start: string | null;
+  period_end: string | null;
+  total_charged: number;
+  total_granted: number;
+  total_refunded: number;
+  current_balance: number;
+  by_query_type: { query_type: string; count: number; credits: number }[];
+};
+
+export type UsageReportResponse = {
+  credits_enabled: boolean;
+  balance: number;
+  plan: string;
+  items: UsageItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  summary: UsageSummary;
+  error?: string;
+  detail?: string;
+};
+
+export type UsageReportQuery = {
+  range: UsageRange;
+  from?: string;
+  to?: string;
+  kind?: "all" | "spend" | "grant" | "refund";
+  page?: number;
+  pageSize?: number;
+};
+
+function buildUsageQueryString(q: UsageReportQuery, format?: "csv"): string {
+  const sp = new URLSearchParams();
+  sp.set("range", q.range);
+  if (q.from) sp.set("from", q.from);
+  if (q.to) sp.set("to", q.to);
+  if (q.kind && q.kind !== "all") sp.set("kind", q.kind);
+  if (q.page && q.page > 1) sp.set("page", String(q.page));
+  if (q.pageSize) sp.set("page_size", String(q.pageSize));
+  if (format) sp.set("format", format);
+  return sp.toString();
+}
+
+export async function fetchUsageReport(
+  q: UsageReportQuery,
+): Promise<UsageReportResponse> {
+  const qs = buildUsageQueryString(q);
+  const res = await fetch(`/api/credits/me/usage?${qs}`, {
+    credentials: "include",
+  });
+  return handleResponse<UsageReportResponse>(res);
+}
+
+export function usageReportCsvUrl(q: UsageReportQuery): string {
+  return `/api/credits/me/usage?${buildUsageQueryString(q, "csv")}`;
+}
+
 export async function redeemStarterCode(code: string): Promise<{
   ok: boolean;
   plan: string;

@@ -1099,6 +1099,371 @@ async def internal_credits_me(
     }
 
 
+# ---------------------------------------------------------------------------
+# GET /internal/credits/me/usage  (per-user usage report; powers Settings page)
+# ---------------------------------------------------------------------------
+
+
+_USAGE_RANGE_VALUES = {"current_month", "last_2_months", "last_30_days", "custom"}
+_USAGE_KIND_VALUES = {"all", "spend", "grant", "refund"}
+
+
+def _parse_usage_range(
+    range_: str,
+    from_str: str | None,
+    to_str: str | None,
+) -> tuple["datetime", "datetime"]:
+    """Resolve `range` + optional from/to to a UTC ``[start, end)`` window.
+
+    All defaults are UTC; the frontend renders dates in the browser timezone.
+    """
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+    now = datetime.now(timezone.utc)
+    r = (range_ or "current_month").strip().lower()
+    if r not in _USAGE_RANGE_VALUES:
+        r = "current_month"
+
+    if r == "current_month":
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # Exclusive end at start of next month.
+        if start.month == 12:
+            end = start.replace(year=start.year + 1, month=1)
+        else:
+            end = start.replace(month=start.month + 1)
+        return start, end
+
+    if r == "last_2_months":
+        # Start of (this month - 1), end of current month (exclusive).
+        first_this = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if first_this.month == 1:
+            start = first_this.replace(year=first_this.year - 1, month=12)
+        else:
+            start = first_this.replace(month=first_this.month - 1)
+        if first_this.month == 12:
+            end = first_this.replace(year=first_this.year + 1, month=1)
+        else:
+            end = first_this.replace(month=first_this.month + 1)
+        return start, end
+
+    if r == "last_30_days":
+        end = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        start = end - timedelta(days=30)
+        return start, end
+
+    # custom
+    def _parse(s: str | None) -> datetime | None:
+        if not s:
+            return None
+        s = s.strip()
+        if not s:
+            return None
+        try:
+            if "T" in s:
+                # full ISO timestamp
+                v = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            elif len(s) == 7:  # YYYY-MM
+                v = datetime.fromisoformat(s + "-01")
+            else:  # YYYY-MM-DD
+                v = datetime.fromisoformat(s)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date format; use YYYY-MM-DD or ISO timestamp.",
+            ) from None
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        return v
+
+    start = _parse(from_str)
+    end = _parse(to_str)
+    if start is None or end is None:
+        # Fall back gracefully when caller forgets `from`/`to`.
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end = now + timedelta(days=1)
+    if end <= start:
+        raise HTTPException(status_code=400, detail="`to` must be after `from`.")
+    # Cap window at 12 months to keep CSV exports cheap.
+    if (end - start).days > 366:
+        raise HTTPException(status_code=400, detail="Date range cannot exceed 366 days.")
+    return start, end
+
+
+def _build_usage_row(
+    *,
+    row_id: "uuid.UUID",
+    delta: int,
+    balance_after: int,
+    reason: str,
+    meta: "dict[str, Any] | None",
+    created_at: "datetime | None",
+) -> dict:
+    from app.credit_reasons import (  # noqa: PLC0415
+        classify_reason,
+        query_type_for,
+        usage_unit,
+        usage_user_query,
+    )
+
+    kind, label = classify_reason(reason, int(delta))
+    count, unit_label = usage_unit(reason, meta)
+    return {
+        "id": str(row_id),
+        "created_at": created_at.isoformat() if created_at else None,
+        "user_query": usage_user_query(reason, meta),
+        "query_type": query_type_for(reason),
+        "unit_label": unit_label,
+        "count_or_seconds": count,
+        "credits_consumed": -int(delta) if int(delta) < 0 else 0,
+        "credits_granted": int(delta) if int(delta) > 0 else 0,
+        "delta": int(delta),
+        "balance_after": int(balance_after),
+        "kind": kind,
+        "reason": reason,
+        "label": label,
+    }
+
+
+@app.get("/internal/credits/me/usage")
+async def internal_credits_me_usage(
+    request: Request,
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    range: Annotated[str, Query(max_length=32)] = "current_month",
+    from_: Annotated[str | None, Query(alias="from", max_length=32)] = None,
+    to: Annotated[str | None, Query(max_length=32)] = None,
+    kind: Annotated[str, Query(max_length=16)] = "all",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+    format: Annotated[str, Query(max_length=8)] = "json",
+):
+    """Per-user usage report sourced from `credit_ledger`.
+
+    Strict scope: rows are filtered by ``user_id`` of the caller (looked up
+    from ``x-user-email`` exactly like ``/internal/credits/me``). Other
+    users' data is never returned, regardless of pagination.
+
+    Supported ``range`` values:
+      * ``current_month`` (default)
+      * ``last_2_months``
+      * ``last_30_days``
+      * ``custom`` — requires ``from`` and ``to`` (YYYY-MM-DD or ISO).
+
+    Set ``format=csv`` to download a flat CSV (no summary). Otherwise JSON
+    is returned with both an ``items`` array and a ``summary`` block.
+    """
+    from datetime import datetime  # noqa: PLC0415
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    from sqlalchemy import and_, func  # noqa: PLC0415
+
+    from app.models import CreditLedger  # noqa: PLC0415
+
+    _require_internal_api_key(request, load_settings())
+    if session is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    email = (request.headers.get("x-user-email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="Missing user identity")
+    settings = load_settings()
+    if not settings.credits_billing_enabled():
+        # Mirror the disabled-billing shape /internal/credits/me uses so the
+        # frontend can render an empty Usage card cleanly.
+        return {
+            "credits_enabled": False,
+            "balance": 0,
+            "plan": "free",
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "summary": {
+                "period_start": None,
+                "period_end": None,
+                "total_charged": 0,
+                "total_granted": 0,
+                "total_refunded": 0,
+                "current_balance": 0,
+                "by_query_type": [],
+            },
+        }
+
+    sub = (request.headers.get("x-user-sub") or "").strip() or None
+
+    async def _load_user():
+        u_inner = await get_or_create_user(session, email=email, google_sub=sub)
+        await session.commit()
+        return u_inner
+
+    try:
+        user = await asyncio.wait_for(_load_user(), timeout=80.0)
+    except asyncio.TimeoutError:
+        logger.error("internal/credits/me/usage timeout email=%s", email[:48])
+        raise HTTPException(
+            status_code=503,
+            detail="Usage service busy (database). Retry shortly.",
+        ) from None
+
+    start, end = _parse_usage_range(range, from_, to)
+    fmt = (format or "json").strip().lower()
+    kind_filter = (kind or "all").strip().lower()
+    if kind_filter not in _USAGE_KIND_VALUES:
+        kind_filter = "all"
+
+    base_filters = [
+        CreditLedger.user_id == user.id,
+        CreditLedger.created_at >= start,
+        CreditLedger.created_at < end,
+    ]
+    # Apply the kind filter via the reason catalogue (no client-side filtering).
+    if kind_filter != "all":
+        from app.credit_reasons import REASON_KIND  # noqa: PLC0415
+
+        wanted = [r for r, k in REASON_KIND.items() if k == kind_filter]
+        if not wanted:
+            wanted = ["__no_match__"]
+        base_filters.append(CreditLedger.reason.in_(wanted))
+
+    rows_stmt = (
+        select(
+            CreditLedger.id,
+            CreditLedger.delta,
+            CreditLedger.balance_after,
+            CreditLedger.reason,
+            CreditLedger.meta,
+            CreditLedger.created_at,
+        )
+        .where(and_(*base_filters))
+        .order_by(CreditLedger.created_at.desc())
+    )
+
+    if fmt == "csv":
+        # Stream all matching rows (no pagination) into a CSV body. The 366-day
+        # window cap above keeps this bounded for normal accounts.
+        result = await session.execute(rows_stmt)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "Date (UTC)",
+            "User Query",
+            "Query Type",
+            "Count / Per sec",
+            "Credit Consumed",
+            "Credit Granted",
+            "Balance After",
+            "Reason",
+        ])
+        for r in result.all():
+            row = _build_usage_row(
+                row_id=r.id,
+                delta=int(r.delta),
+                balance_after=int(r.balance_after),
+                reason=r.reason,
+                meta=r.meta,
+                created_at=r.created_at,
+            )
+            writer.writerow([
+                row["created_at"] or "",
+                row["user_query"],
+                row["query_type"],
+                row["unit_label"],
+                row["credits_consumed"] or "",
+                row["credits_granted"] or "",
+                row["balance_after"],
+                row["reason"],
+            ])
+        body = buf.getvalue()
+        fname_from = start.date().isoformat()
+        fname_to = (end.date().isoformat()
+                    if end.hour == 0 and end.minute == 0 else end.date().isoformat())
+        filename = f"enablyai-usage-{fname_from}-to-{fname_to}.csv"
+        return Response(
+            content=body,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # JSON: paginated items + summary
+    page = max(1, int(page))
+    page_size = max(1, min(200, int(page_size)))
+
+    total_stmt = (
+        select(func.count())
+        .select_from(CreditLedger)
+        .where(and_(*base_filters))
+    )
+    total = int((await session.execute(total_stmt)).scalar() or 0)
+
+    items_stmt = rows_stmt.offset((page - 1) * page_size).limit(page_size)
+    rows = (await session.execute(items_stmt)).all()
+    items = [
+        _build_usage_row(
+            row_id=r.id,
+            delta=int(r.delta),
+            balance_after=int(r.balance_after),
+            reason=r.reason,
+            meta=r.meta,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+    # Summary: aggregate over the full window (independent of pagination).
+    summary_stmt = (
+        select(CreditLedger.reason, CreditLedger.delta)
+        .where(and_(*base_filters))
+    )
+    summary_rows = (await session.execute(summary_stmt)).all()
+    total_charged = 0
+    total_granted = 0
+    total_refunded = 0
+    by_type: dict[str, dict[str, int]] = {}
+    for sr in summary_rows:
+        d = int(sr.delta)
+        from app.credit_reasons import classify_reason, query_type_for  # noqa: PLC0415
+
+        sr_kind, _ = classify_reason(sr.reason, d)
+        if sr_kind == "spend":
+            total_charged += -d if d < 0 else 0
+        elif sr_kind == "refund":
+            total_refunded += d if d > 0 else 0
+        else:
+            total_granted += d if d > 0 else 0
+        qt = query_type_for(sr.reason)
+        slot = by_type.setdefault(qt, {"count": 0, "credits": 0})
+        slot["count"] += 1
+        if sr_kind == "spend":
+            slot["credits"] += -d if d < 0 else 0
+        elif sr_kind == "refund":
+            slot["credits"] += -(d if d > 0 else 0)
+        else:
+            slot["credits"] += d if d > 0 else 0
+
+    by_query_type = [
+        {"query_type": k, "count": v["count"], "credits": v["credits"]}
+        for k, v in sorted(by_type.items(), key=lambda kv: -abs(kv[1]["credits"]))
+    ]
+
+    return {
+        "credits_enabled": True,
+        "balance": int(user.credit_balance),
+        "plan": user.plan,
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "summary": {
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+            "total_charged": total_charged,
+            "total_granted": total_granted,
+            "total_refunded": total_refunded,
+            "current_balance": int(user.credit_balance),
+            "by_query_type": by_query_type,
+        },
+    }
+
+
 @app.post("/internal/credits/redeem")
 async def internal_credits_redeem(
     request: Request,
@@ -1428,6 +1793,8 @@ async def generate(
                     "target_sec": target_sec,
                     "job_id": job_id,
                     "enhance_motion": enhance_kb,
+                    "topic": (topic or "").strip()[:200],
+                    "language": lang,
                 },
             )
         except InsufficientCreditsError as e:
@@ -2279,7 +2646,12 @@ async def api_generate_image(
                 locked,
                 img_cost,
                 reason="generate_image",
-                meta={"count": len(images)},
+                meta={
+                    "count": len(images),
+                    "prompt": prompt_clean[:200],
+                    "style": style,
+                    "aspect_ratio": aspect_ratio,
+                },
             )
         except InsufficientCreditsError as e:
             raise HTTPException(
@@ -2441,6 +2813,8 @@ async def api_photo_to_video(
                     "task": veo_task,
                     "end_frame": bool(end_bytes),
                     "video_provider": video_provider,
+                    "prompt": motion_text[:200] if motion_text else "",
+                    "aspect_ratio": aspect_ratio,
                 },
             )
         except InsufficientCreditsError as e:
@@ -2555,7 +2929,13 @@ async def api_image_to_ad(
                 locked,
                 veo_cost,
                 reason="veo_image_to_ad",
-                meta={"duration_sec": snap_d, "tier": "1080" if is_1080 else "720"},
+                meta={
+                    "duration_sec": snap_d,
+                    "tier": "1080" if is_1080 else "720",
+                    "ad_copy": ad_copy_clean[:200],
+                    "template": template,
+                    "aspect_ratio": aspect_ratio,
+                },
             )
         except InsufficientCreditsError as e:
             raise HTTPException(
@@ -2674,7 +3054,12 @@ async def api_generate_voice(
                 locked,
                 voice_cost,
                 reason="tts_generate",
-                meta={"chars": len(text_clean)},
+                meta={
+                    "chars": len(text_clean),
+                    "language": lang,
+                    "voice": (voice or "").strip()[:80],
+                    "text": text_clean[:200],
+                },
             )
         except InsufficientCreditsError as e:
             raise HTTPException(

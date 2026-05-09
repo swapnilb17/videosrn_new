@@ -42,6 +42,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.credit_reasons import REASON_KIND, REASON_LABEL, classify_reason
 from app.credit_service import normalize_redeem_code
 from app.db import get_db_session
 from app.models import (
@@ -487,48 +488,15 @@ async def admin_deactivate_code(
 # GET /internal/admin/activity  (powers the Activity log page)
 # ---------------------------------------------------------------------------
 
-# Reasons emitted by the existing app code paths. Kept as a frozen catalogue
-# so the admin UI can show a stable filter dropdown and so we can classify
-# rows into grant / spend / refund without parsing strings client-side.
-#
-# When new reasons are added in `credit_service` / `main` / `credit_holds`,
-# add them here too — unknown reasons still render fine, they just default
-# to ``kind="other"`` and a humanised label.
-_REASON_KIND: dict[str, str] = {
-    "signup_grant": "grant",
-    "starter_redeem_grant": "grant",
-    "promo_code_grant": "grant",
-    "admin_credit_code": "grant",
-    "razorpay_starter_purchase": "grant",
-    "refund_failed_job": "refund",
-    "refund_veo_failed": "refund",
-    "standard_video": "spend",
-    "generate_image": "spend",
-    "veo_image_to_ad": "spend",
-    "tts_generate": "spend",
-}
-
-_REASON_LABEL: dict[str, str] = {
-    "signup_grant": "Signup credits",
-    "starter_redeem_grant": "Starter unlocked",
-    "promo_code_grant": "Legacy promo redeemed",
-    "admin_credit_code": "Admin code redeemed",
-    "razorpay_starter_purchase": "Razorpay payment captured",
-    "refund_failed_job": "Refund (failed job)",
-    "refund_veo_failed": "Refund (Veo failed)",
-    "standard_video": "Standard video",
-    "generate_image": "Image generated",
-    "veo_image_to_ad": "Veo image-to-ad",
-    "tts_generate": "TTS generated",
-}
+# Reason metadata moved to ``app.credit_reasons`` so the per-user Usage
+# report and admin Activity feed share one catalogue. Local aliases keep
+# this file's existing call sites unchanged.
+_REASON_KIND: dict[str, str] = REASON_KIND
+_REASON_LABEL: dict[str, str] = REASON_LABEL
 
 
 def _classify(reason: str, delta: int) -> tuple[str, str]:
-    kind = _REASON_KIND.get(reason)
-    if kind is None:
-        kind = "grant" if delta >= 0 else "spend"
-    label = _REASON_LABEL.get(reason, reason.replace("_", " ").title())
-    return kind, label
+    return classify_reason(reason, delta)
 
 
 @router.get("/activity")
