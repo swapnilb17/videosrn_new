@@ -79,14 +79,14 @@ function MobileNavInner() {
             <FlatNavLink key={item.href} item={item} active={item.match(pathname)} />
           ))}
 
-          <li className="relative -mt-7 flex w-16 items-end justify-center">
+          <li className="relative flex flex-1 flex-col items-center justify-end gap-1 py-2 text-[11px]">
             <button
               type="button"
               onClick={() => setCreateOpen(true)}
               aria-label="Create"
               aria-expanded={createOpen}
               className={cn(
-                "clay flex h-14 w-14 items-center justify-center rounded-full text-white",
+                "clay absolute bottom-7 left-1/2 flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-2xl text-white",
                 "shadow-[0_10px_30px_rgba(112,92,255,0.55)]",
                 isCreateActive
                   ? "ring-2 ring-purple-300/70 ring-offset-2 ring-offset-[#0b0f1f]"
@@ -95,10 +95,11 @@ function MobileNavInner() {
             >
               <Plus className="h-6 w-6" strokeWidth={2.5} />
             </button>
+            <span aria-hidden="true" className="block h-5 w-5" />
             <span
               className={cn(
-                "pointer-events-none absolute -bottom-1 text-[10px] font-medium",
-                isCreateActive ? "text-white" : "text-slate-300",
+                "pointer-events-none font-medium",
+                isCreateActive ? "text-white" : "text-slate-400",
               )}
             >
               Create
@@ -209,7 +210,7 @@ function FlatNavLink({ item, active }: { item: FlatItem; active: boolean }) {
       <Link
         href={item.href}
         className={cn(
-          "flex flex-1 flex-col items-center justify-center gap-1 py-2 text-[11px] transition",
+          "flex flex-1 flex-col items-center justify-end gap-1 py-2 text-[11px] transition",
           active ? "text-white" : "text-slate-400 active:text-white",
         )}
       >
@@ -232,7 +233,7 @@ function MoreNavButton({ onOpen }: { onOpen: () => void }) {
         type="button"
         onClick={onOpen}
         aria-label="More options"
-        className="flex flex-1 flex-col items-center justify-center gap-1 py-2 text-[11px] text-slate-400 transition active:text-white"
+        className="flex flex-1 flex-col items-center justify-end gap-1 py-2 text-[11px] text-slate-400 transition active:text-white"
       >
         <MoreHorizontal className="h-5 w-5" />
         <span className="font-medium">More</span>
