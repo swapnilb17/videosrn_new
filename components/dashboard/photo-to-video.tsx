@@ -364,24 +364,42 @@ export function PhotoToVideo() {
           <div className="space-y-1.5">
             <label className="text-sm text-slate-300">Prompt</label>
             {remixTemplateTitle ? (
-              <div className="flex items-center gap-2 rounded-lg border border-purple-400/30 bg-purple-500/10 px-2.5 py-1.5 text-[11px] text-purple-100">
-                {loadingRemixAsset ? (
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-purple-300" />
-                ) : (
-                  <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-300" />
-                )}
-                <span className="truncate">
-                  Remixing template:{" "}
-                  <span className="font-medium">{remixTemplateTitle}</span>
-                  <span className="ml-1 text-purple-200/70">
-                    {loadingRemixAsset
-                      ? "— loading start frame…"
-                      : remixAssetUrl
-                        ? "— start frame loaded, edit the motion prompt"
-                        : "— edit the prompt below"}
-                  </span>
-                </span>
-              </div>
+              (() => {
+                const frameAttached = Boolean(startFrame);
+                const frameFailed =
+                  Boolean(remixAssetUrl) && !loadingRemixAsset && !frameAttached;
+                const tone = frameFailed
+                  ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
+                  : "border-purple-400/30 bg-purple-500/10 text-purple-100";
+                const accent = frameFailed ? "text-amber-300" : "text-purple-300";
+                const accentMuted = frameFailed
+                  ? "text-amber-200/70"
+                  : "text-purple-200/70";
+                return (
+                  <div
+                    className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] ${tone}`}
+                  >
+                    {loadingRemixAsset ? (
+                      <Loader2 className={`h-3.5 w-3.5 shrink-0 animate-spin ${accent}`} />
+                    ) : (
+                      <Sparkles className={`h-3.5 w-3.5 shrink-0 ${accent}`} />
+                    )}
+                    <span className="truncate">
+                      Remixing template:{" "}
+                      <span className="font-medium">{remixTemplateTitle}</span>
+                      <span className={`ml-1 ${accentMuted}`}>
+                        {loadingRemixAsset
+                          ? "— loading start frame…"
+                          : frameAttached
+                            ? "— start frame attached, edit the motion prompt"
+                            : frameFailed
+                              ? "— couldn't load start frame, upload one manually"
+                              : "— edit the prompt below"}
+                      </span>
+                    </span>
+                  </div>
+                );
+              })()
             ) : null}
             <textarea
               className={`${INPUT_CLS} min-h-[88px] resize-y`}

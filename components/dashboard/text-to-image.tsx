@@ -125,8 +125,9 @@ export function TextToImage() {
   }, []);
 
   // Pre-load the template's image as a reference when arriving from the
-  // Templates "Remix" flow. Failure is non-fatal — banner still appears,
-  // user can upload a different image or generate prompt-only.
+  // Templates "Remix" flow. Bypass the user-upload size check — templates
+  // come from our own trusted feed. Failure is non-fatal; the banner shows
+  // the error so the user can pick a different template or upload manually.
   useEffect(() => {
     if (!remixAssetUrl) return;
     let cancelled = false;
@@ -136,7 +137,10 @@ export function TextToImage() {
         `template-${remixTemplateTitle ?? "reference"}`,
       );
       if (cancelled) return;
-      if (file) handleImageSelect(file);
+      if (file) {
+        setUploadedImage(file);
+        setImagePreview(URL.createObjectURL(file));
+      }
       setLoadingRemixAsset(false);
     })();
     return () => {
@@ -221,24 +225,42 @@ export function TextToImage() {
           <div className="space-y-1.5">
             <label className="text-sm text-slate-300">Describe your image</label>
             {remixTemplateTitle ? (
-              <div className="flex items-center gap-2 rounded-lg border border-purple-400/30 bg-purple-500/10 px-2.5 py-1.5 text-[11px] text-purple-100">
-                {loadingRemixAsset ? (
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-purple-300" />
-                ) : (
-                  <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-300" />
-                )}
-                <span className="truncate">
-                  Remixing template:{" "}
-                  <span className="font-medium">{remixTemplateTitle}</span>
-                  <span className="ml-1 text-purple-200/70">
-                    {loadingRemixAsset
-                      ? "— loading reference image…"
-                      : remixAssetUrl
-                        ? "— reference image loaded, edit the prompt"
-                        : "— edit the prompt below"}
-                  </span>
-                </span>
-              </div>
+              (() => {
+                const referenceAttached = Boolean(uploadedImage);
+                const referenceFailed =
+                  Boolean(remixAssetUrl) && !loadingRemixAsset && !referenceAttached;
+                const tone = referenceFailed
+                  ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
+                  : "border-purple-400/30 bg-purple-500/10 text-purple-100";
+                const accent = referenceFailed ? "text-amber-300" : "text-purple-300";
+                const accentMuted = referenceFailed
+                  ? "text-amber-200/70"
+                  : "text-purple-200/70";
+                return (
+                  <div
+                    className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] ${tone}`}
+                  >
+                    {loadingRemixAsset ? (
+                      <Loader2 className={`h-3.5 w-3.5 shrink-0 animate-spin ${accent}`} />
+                    ) : (
+                      <Sparkles className={`h-3.5 w-3.5 shrink-0 ${accent}`} />
+                    )}
+                    <span className="truncate">
+                      Remixing template:{" "}
+                      <span className="font-medium">{remixTemplateTitle}</span>
+                      <span className={`ml-1 ${accentMuted}`}>
+                        {loadingRemixAsset
+                          ? "— loading reference image…"
+                          : referenceAttached
+                            ? "— reference image attached, edit the prompt"
+                            : referenceFailed
+                              ? "— couldn't load reference image, upload one manually"
+                              : "— edit the prompt below"}
+                      </span>
+                    </span>
+                  </div>
+                );
+              })()
             ) : null}
             <textarea
               className={`${INPUT_CLS} h-28 resize-none`}

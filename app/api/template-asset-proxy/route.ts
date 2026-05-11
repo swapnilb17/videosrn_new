@@ -38,6 +38,7 @@ function isAllowedAssetUrl(raw: string): URL | null {
 export async function GET(request: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) {
+    console.warn("[template-asset-proxy] 401 — no session");
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -48,6 +49,16 @@ export async function GET(request: NextRequest) {
 
   const target = isAllowedAssetUrl(raw);
   if (!target) {
+    console.warn(
+      "[template-asset-proxy] 403 — host not allowed:",
+      (() => {
+        try {
+          return new URL(raw).hostname;
+        } catch {
+          return "<unparseable>";
+        }
+      })(),
+    );
     return NextResponse.json(
       { error: "Asset host is not allowed" },
       { status: 403 },
@@ -62,7 +73,8 @@ export async function GET(request: NextRequest) {
       // Don't forward cookies — the URL is already presigned.
       headers: { Accept: "image/*,video/*;q=0.9,*/*;q=0.5" },
     });
-  } catch {
+  } catch (err) {
+    console.error("[template-asset-proxy] 502 — upstream fetch threw:", err);
     return NextResponse.json(
       { error: "Upstream fetch failed" },
       { status: 502 },
@@ -70,6 +82,11 @@ export async function GET(request: NextRequest) {
   }
 
   if (!upstream.ok) {
+    console.warn(
+      "[template-asset-proxy] upstream non-OK:",
+      upstream.status,
+      target.hostname,
+    );
     return NextResponse.json(
       { error: `Upstream returned ${upstream.status}` },
       { status: upstream.status },
@@ -81,6 +98,7 @@ export async function GET(request: NextRequest) {
   if (lenHeader) {
     const len = Number(lenHeader);
     if (Number.isFinite(len) && len > MAX_UPSTREAM_BYTES) {
+      console.warn("[template-asset-proxy] 413 — asset too large:", len);
       return NextResponse.json(
         { error: "Asset too large" },
         { status: 413 },
