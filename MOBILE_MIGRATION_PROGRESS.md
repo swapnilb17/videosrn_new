@@ -71,7 +71,9 @@ Make EnablyAI_VGEN first-class on phones while **keeping the desktop UI byte-for
 - `components/dashboard/text-to-voice.tsx` — same stack pattern.
 - `components/dashboard/photo-to-video.tsx` — same stack pattern.
 - `components/dashboard/image-to-ad-video.tsx` — same stack pattern.
-- `components/dashboard/templates-gallery.tsx` — `IntersectionObserver` autoplay for touch devices, hover-only autoplay for mouse; full-width search on phones.
+- `components/dashboard/templates-gallery.tsx` — `IntersectionObserver` autoplay for touch devices, hover-only autoplay for mouse; full-width search on phones. **Remix flow**: each card is a `<Link>` to `/dashboard/create?service=…&prompt=…&template_id=…&template_title=…`. Image → `text-to-image`; video → `photo-to-video` with `task=text_to_video` (no upload needed). Overlay "Remix" pill is always visible on touch, hover-only on `md+`.
+- `components/dashboard/text-to-image.tsx` — reads `prompt` + `template_title` from `useSearchParams` for the Remix prefill. Shows a small "Remixing template: …" banner above the prompt textarea.
+- `components/dashboard/photo-to-video.tsx` — reads `prompt`, `task`, `template_title` from `useSearchParams`. Initial task respects `?task=text_to_video` so video-template remixes don't require a start frame. Same banner above the prompt textarea.
 - `components/dashboard/media-gallery.tsx` — `grid-cols-2` on mobile (was 1-col default).
 - `components/billing/usage-report.tsx` — wide table only at `md:` and up; mobile renders a card list with the same data.
 

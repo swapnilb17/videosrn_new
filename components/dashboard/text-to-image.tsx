@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ImageIcon,
   Sparkles,
@@ -65,7 +66,13 @@ const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB
 
 export function TextToImage() {
   const { userEmail, userId } = useAuth();
-  const [prompt, setPrompt] = useState("");
+  const searchParams = useSearchParams();
+  // Optional prefill from the Templates "Remix" flow. Read once on mount —
+  // re-render via param change would also be handled correctly by initializer.
+  const prefilledPrompt = searchParams.get("prompt") ?? "";
+  const remixTemplateTitle = searchParams.get("template_title");
+
+  const [prompt, setPrompt] = useState(prefilledPrompt);
   const [style, setStyle] = useState("photorealistic");
   const [aspect, setAspect] = useState("1:1");
   const [count, setCount] = useState<number>(1);
@@ -181,6 +188,16 @@ export function TextToImage() {
           {/* Prompt */}
           <div className="space-y-1.5">
             <label className="text-sm text-slate-300">Describe your image</label>
+            {remixTemplateTitle ? (
+              <div className="flex items-center gap-2 rounded-lg border border-purple-400/30 bg-purple-500/10 px-2.5 py-1.5 text-[11px] text-purple-100">
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-300" />
+                <span className="truncate">
+                  Remixing template:{" "}
+                  <span className="font-medium">{remixTemplateTitle}</span>
+                  <span className="ml-1 text-purple-200/70">— edit the prompt below</span>
+                </span>
+              </div>
+            ) : null}
             <textarea
               className={`${INPUT_CLS} h-28 resize-none`}
               placeholder="A futuristic city at sunset with flying cars..."

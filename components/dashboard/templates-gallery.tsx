@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, Sparkles } from "lucide-react";
 import { useIsTouch } from "@/lib/use-is-mobile";
 
 type FeedItem = {
@@ -22,6 +24,33 @@ type FeedItem = {
 type FeedResponse = { items: FeedItem[] };
 
 type KindFilter = "all" | "image" | "video";
+
+const REMIX_PROMPT_MAX = 800;
+
+/** Build the creator URL that pre-fills the prompt from a template. Image
+ *  templates go to Text to Image; video templates go to Image to Video in
+ *  `text_to_video` mode so the user doesn't need to upload a start frame. */
+function buildRemixHref(t: FeedItem): string {
+  const parts: string[] = [];
+  if (t.title) parts.push(t.title.trim());
+  if (t.description) parts.push(t.description.trim());
+  if (t.tags && t.tags.length > 0) {
+    parts.push(`Style: ${t.tags.slice(0, 6).join(", ")}`);
+  }
+  const prompt = parts.filter(Boolean).join(". ").slice(0, REMIX_PROMPT_MAX);
+
+  const params = new URLSearchParams();
+  if (t.kind === "video") {
+    params.set("service", "photo-to-video");
+    params.set("task", "text_to_video");
+  } else {
+    params.set("service", "text-to-image");
+  }
+  params.set("prompt", prompt);
+  params.set("template_id", t.id);
+  params.set("template_title", t.title);
+  return `/dashboard/create?${params.toString()}`;
+}
 
 export function TemplatesGallery() {
   const [items, setItems] = useState<FeedItem[] | null>(null);
@@ -150,8 +179,15 @@ function TemplateCard({ t }: { t: FeedItem }) {
     return () => io.disconnect();
   }, [isTouch, t.kind]);
 
+  const remixHref = buildRemixHref(t);
+  const remixLabel = t.kind === "video" ? "Remix this video" : "Remix this image";
+
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-white/10 bg-white/5 transition-colors hover:border-purple-400/50">
+    <Link
+      href={remixHref}
+      aria-label={remixLabel}
+      className="group relative block overflow-hidden rounded-xl border border-white/10 bg-white/5 transition-colors hover:border-purple-400/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+    >
       <div className="relative aspect-[4/5] w-full overflow-hidden bg-black/40">
         {t.kind === "video" ? (
           // eslint-disable-next-line jsx-a11y/media-has-caption
@@ -193,9 +229,21 @@ function TemplateCard({ t }: { t: FeedItem }) {
             loading="lazy"
           />
         )}
-        <span className="absolute top-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
+        <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
           {t.kind}
         </span>
+
+        {/* Remix CTA — always visible on touch, hover-only on desktop */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-2 bottom-2 flex items-center justify-between gap-2 rounded-full border border-white/15 bg-black/65 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-md transition-opacity md:opacity-0 md:group-hover:opacity-100"
+        >
+          <span className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-purple-300" />
+            Remix
+          </span>
+          <ArrowRight className="h-3.5 w-3.5" />
+        </div>
       </div>
       <div className="p-2.5">
         <div className="truncate text-sm font-medium text-slate-100" title={t.title}>
@@ -207,6 +255,6 @@ function TemplateCard({ t }: { t: FeedItem }) {
           {t.language ? <span className="uppercase">{t.language}</span> : null}
         </div>
       </div>
-    </div>
+    </Link>
   );
 }

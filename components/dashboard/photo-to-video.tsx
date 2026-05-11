@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   Upload,
@@ -15,6 +16,7 @@ import {
   Clapperboard,
   ImageIcon,
   GalleryHorizontalEnd,
+  Sparkles,
 } from "lucide-react";
 import { ClayButton } from "@/components/clay-button";
 import { Button } from "@/components/ui/button";
@@ -108,16 +110,29 @@ function statusToPhotoResult(s: JobStatusResponse): PhotoToVideoResponse {
 
 export function PhotoToVideo() {
   const { userEmail, userId } = useAuth();
+  const searchParams = useSearchParams();
+  // Optional prefill from the Templates "Remix" flow.
+  const remixTemplateTitle = searchParams.get("template_title");
+  const prefillTaskParam = searchParams.get("task");
+  const prefillPrompt = (searchParams.get("prompt") ?? "").slice(
+    0,
+    PHOTO_VIDEO_PROMPT_MAX,
+  );
+  const initialTask: (typeof TASKS)[number]["value"] =
+    prefillTaskParam === "text_to_video" || prefillTaskParam === "image_to_video"
+      ? prefillTaskParam
+      : "image_to_video";
+
   const startRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLInputElement>(null);
-  const [task, setTask] = useState<(typeof TASKS)[number]["value"]>("image_to_video");
+  const [task, setTask] = useState<(typeof TASKS)[number]["value"]>(initialTask);
   const [videoModel, setVideoModel] =
     useState<(typeof VIDEO_MODELS)[number]["value"]>("kling");
   const [startFrame, setStartFrame] = useState<File | null>(null);
   const [startPreview, setStartPreview] = useState<string | null>(null);
   const [endFrame, setEndFrame] = useState<File | null>(null);
   const [endPreview, setEndPreview] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(prefillPrompt);
   const [duration, setDuration] = useState(8);
   const [camera, setCamera] = useState("zoom_in");
   const [aspect, setAspect] = useState("16:9");
@@ -309,6 +324,16 @@ export function PhotoToVideo() {
 
           <div className="space-y-1.5">
             <label className="text-sm text-slate-300">Prompt</label>
+            {remixTemplateTitle ? (
+              <div className="flex items-center gap-2 rounded-lg border border-purple-400/30 bg-purple-500/10 px-2.5 py-1.5 text-[11px] text-purple-100">
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-300" />
+                <span className="truncate">
+                  Remixing template:{" "}
+                  <span className="font-medium">{remixTemplateTitle}</span>
+                  <span className="ml-1 text-purple-200/70">— edit the prompt below</span>
+                </span>
+              </div>
+            ) : null}
             <textarea
               className={`${INPUT_CLS} min-h-[88px] resize-y`}
               placeholder="Write your prompt…"
