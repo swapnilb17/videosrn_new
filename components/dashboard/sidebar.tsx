@@ -3,56 +3,44 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
-import {
-  Home,
-  FolderKanban,
-  GalleryHorizontalEnd,
-  Settings,
-  Film,
-  ImageIcon,
-  Mic,
-  Clapperboard,
-  Megaphone,
-  Sparkles,
-} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { mainLinks, serviceHref, serviceLinks } from "@/lib/dashboard-nav";
 
-const mainLinks = [
-  { href: "/dashboard", label: "Dashboard", icon: Home },
-  { href: "/dashboard/templates", label: "Templates", icon: Sparkles },
-  { href: "/dashboard/media", label: "Media Library", icon: GalleryHorizontalEnd },
-  { href: "/dashboard/projects", label: "Projects", icon: FolderKanban },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings },
-];
+type SidebarContentProps = {
+  onNavigate?: () => void;
+  showBrand?: boolean;
+};
 
-const serviceLinks = [
-  { service: "topic-to-video", label: "Topic to Video", icon: Film },
-  { service: "text-to-image", label: "Text to Image", icon: ImageIcon },
-  { service: "text-to-voice", label: "Text to Voice", icon: Mic },
-  { service: "photo-to-video", label: "Image to Video", icon: Clapperboard },
-  { service: "image-to-ad", label: "Image to AD Video", icon: Megaphone },
-];
-
-export function DashboardSidebar() {
+/**
+ * Reusable nav content — used inside the desktop `<aside>` rail and the
+ * mobile hamburger drawer. `onNavigate` lets the drawer close itself when
+ * a link is tapped.
+ */
+export function SidebarContent({ onNavigate, showBrand = true }: SidebarContentProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const activeService = searchParams.get("service") ?? "topic-to-video";
   const isCreatePage = pathname === "/dashboard/create";
 
   return (
-    <aside className="w-full border-b border-white/10 bg-[#0d1020] p-4 md:w-64 md:border-b-0 md:border-r">
-      <Link href="/" className="mb-8 flex items-center gap-2 text-lg font-semibold">
-        <Image
-          src="/logo.png"
-          alt="EnablyAI logo"
-          width={24}
-          height={24}
-          className="rounded-md"
-        />
-        EnablyAI
-      </Link>
+    <div className="flex flex-col">
+      {showBrand ? (
+        <Link
+          href="/"
+          onClick={onNavigate}
+          className="mb-8 flex items-center gap-2 text-lg font-semibold"
+        >
+          <Image
+            src="/logo.png"
+            alt="EnablyAI logo"
+            width={24}
+            height={24}
+            className="rounded-md"
+          />
+          EnablyAI
+        </Link>
+      ) : null}
 
-      {/* Main nav */}
       <nav className="grid gap-1">
         {mainLinks.map((link) => {
           const Icon = link.icon;
@@ -61,6 +49,7 @@ export function DashboardSidebar() {
             <Link
               key={link.href}
               href={link.href}
+              onClick={onNavigate}
               className={cn(
                 "flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors",
                 isActive
@@ -75,7 +64,6 @@ export function DashboardSidebar() {
         })}
       </nav>
 
-      {/* Divider + AI Services */}
       <div className="mt-6 mb-3 border-t border-white/10 pt-4">
         <p className="px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
           AI Services
@@ -89,7 +77,8 @@ export function DashboardSidebar() {
           return (
             <Link
               key={svc.service}
-              href={`/dashboard/create?service=${svc.service}`}
+              href={serviceHref(svc.service)}
+              onClick={onNavigate}
               className={cn(
                 "flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors",
                 isActive
@@ -103,6 +92,18 @@ export function DashboardSidebar() {
           );
         })}
       </nav>
+    </div>
+  );
+}
+
+/**
+ * Desktop sidebar rail. Hidden below `md:` — the mobile experience uses the
+ * hamburger drawer + bottom nav instead.
+ */
+export function DashboardSidebar() {
+  return (
+    <aside className="hidden border-r border-white/10 bg-[#0d1020] p-4 md:block md:w-64">
+      <SidebarContent />
     </aside>
   );
 }

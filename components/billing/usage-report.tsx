@@ -269,7 +269,8 @@ export function UsageReport({
         </div>
       ) : null}
 
-      <div className="overflow-x-auto rounded-xl border border-white/10">
+      {/* Desktop table */}
+      <div className="hidden overflow-x-auto rounded-xl border border-white/10 md:block">
         <table className="min-w-full text-sm">
           <thead className="bg-white/5 text-left text-xs uppercase tracking-wide text-slate-400">
             <tr>
@@ -324,6 +325,52 @@ export function UsageReport({
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* Mobile card list — same data, one card per row */}
+      <div className="space-y-2 md:hidden">
+        {loading && !data ? (
+          <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-4 text-center text-sm text-slate-400">
+            Loading usage…
+          </p>
+        ) : !data || data.items.length === 0 ? (
+          <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-4 text-center text-sm text-slate-400">
+            No activity in this period yet.
+          </p>
+        ) : (
+          data.items.map((item) => (
+            <div
+              key={item.id}
+              className="rounded-xl border border-white/10 bg-white/5 p-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <p
+                  className="min-w-0 flex-1 truncate text-sm font-medium text-slate-100"
+                  title={item.user_query}
+                >
+                  {item.user_query}
+                </p>
+                <span
+                  className={`shrink-0 text-sm font-semibold ${rowAmountClass(item)}`}
+                >
+                  {rowAmountValue(item)}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                {formatDate(item.created_at)}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-300">
+                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+                  {item.query_type}
+                </span>
+                <span>{item.unit_label}</span>
+                <span className="ml-auto text-slate-400">
+                  Balance: {item.balance_after}
+                </span>
+              </div>
+            </div>
+          ))
+        )}
       </div>
 
       {data && data.total > data.page_size ? (

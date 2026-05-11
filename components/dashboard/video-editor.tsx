@@ -284,9 +284,9 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">{title}</h1>
 
-      <div className="grid gap-4 xl:grid-cols-[320px_1fr_300px]">
+      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[320px_1fr_300px]">
         {/* ========= LEFT PANEL — Prompt & Controls ========= */}
-        <Card className="space-y-4 overflow-y-auto max-h-[calc(100vh-140px)]">
+        <Card className="space-y-4 xl:max-h-[calc(100dvh-140px)] xl:overflow-y-auto">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Film className="h-5 w-5 text-purple-400" />
             Prompt &amp; Controls
@@ -530,7 +530,7 @@ export function VideoEditor({ title = "Create Video" }: VideoEditorProps) {
         </Card>
 
         {/* ========= RIGHT PANEL — Video Settings & Assets ========= */}
-        <Card className="space-y-4 overflow-y-auto max-h-[calc(100vh-140px)]">
+        <Card className="space-y-4 xl:max-h-[calc(100dvh-140px)] xl:overflow-y-auto">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Gauge className="h-5 w-5 text-purple-400" />
             Video Settings &amp; Assets

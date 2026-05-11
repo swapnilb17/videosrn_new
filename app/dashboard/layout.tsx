@@ -3,6 +3,8 @@
 import { Suspense } from "react";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { DashboardTopbar } from "@/components/dashboard/topbar";
+import { MobileTopbar } from "@/components/dashboard/mobile-topbar";
+import { MobileNav } from "@/components/dashboard/mobile-nav";
 import { useAuth } from "@/lib/auth-context";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -46,9 +48,13 @@ export default function DashboardLayout({
         <DashboardSidebar />
       </Suspense>
       <div className="flex min-w-0 flex-1 flex-col">
+        <MobileTopbar />
         <DashboardTopbar />
-        <main className="flex-1 bg-[#0a0d1b] p-4 md:p-6">{children}</main>
+        <main className="flex-1 bg-[#0a0d1b] p-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:p-6 md:pb-6">
+          {children}
+        </main>
       </div>
+      <MobileNav />
     </div>
   );
 }

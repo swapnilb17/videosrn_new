@@ -122,9 +122,9 @@ export function TextToVoice() {
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">Text to Voice</h1>
 
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[360px_1fr] xl:gap-4">
         {/* ========= LEFT PANEL — Controls ========= */}
-        <Card className="space-y-4 overflow-y-auto max-h-[calc(100vh-140px)]">
+        <Card className="space-y-4 xl:max-h-[calc(100dvh-140px)] xl:overflow-y-auto">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Mic className="h-5 w-5 text-orange-400" />
             Voice Settings

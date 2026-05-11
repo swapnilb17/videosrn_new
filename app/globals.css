@@ -20,6 +20,45 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior-y: none;
+  touch-action: manipulation;
+}
+
+/* Mobile-friendly viewport utilities.
+   `dvh` (dynamic viewport height) accounts for the iOS Safari URL bar
+   show/hide so panels don't jump. Fall back to `vh` on older browsers. */
+.h-app {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.h-screen-app {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Bottom safe-area padding for fixed bottom nav on notched devices. */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.pt-safe {
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+}
+
+/* On touch / coarse-pointer devices, suppress `:hover`-based transforms
+   from .clay and .cta-glow so they don't get stuck after a tap. */
+@media (pointer: coarse) {
+  .clay:hover {
+    transform: none;
+    filter: none;
+  }
+  .cta-glow:hover::before {
+    opacity: 0.85;
+    transform: none;
+  }
 }
 
 .bg-aurora {

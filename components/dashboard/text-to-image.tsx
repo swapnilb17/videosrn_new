@@ -170,9 +170,9 @@ export function TextToImage() {
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">Text to Image</h1>
 
-      <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
+      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[420px_1fr] xl:gap-4">
         {/* ========= LEFT PANEL — Controls ========= */}
-        <Card className="space-y-4 overflow-y-auto max-h-[calc(100vh-140px)]">
+        <Card className="space-y-4 xl:max-h-[calc(100dvh-140px)] xl:overflow-y-auto">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <ImageIcon className="h-5 w-5 text-emerald-400" />
             Image Settings
@@ -209,7 +209,8 @@ export function TextToImage() {
               >
                 <Upload className="h-8 w-8 text-slate-500" />
                 <p className="text-xs text-slate-400">
-                  Drag & drop or click to upload your photo
+                  <span className="hidden md:inline">Drag &amp; drop or click to upload your photo</span>
+                  <span className="md:hidden">Tap to choose a photo</span>
                 </p>
                 <p className="text-[10px] text-slate-600">
                   JPG, PNG or WebP — max 10 MB
@@ -250,7 +251,7 @@ export function TextToImage() {
                 </span>
               )}
             </label>
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
               {PORTRAIT_TEMPLATES.map((tpl) => (
                 <button
                   key={tpl.value}

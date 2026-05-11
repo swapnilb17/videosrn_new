@@ -263,8 +263,8 @@ export function PhotoToVideo() {
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">Image to Video</h1>
 
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-        <Card className="max-h-[calc(100vh-140px)] space-y-4 overflow-y-auto">
+      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[360px_1fr] xl:gap-4">
+        <Card className="space-y-4 xl:max-h-[calc(100dvh-140px)] xl:overflow-y-auto">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Clapperboard className="h-5 w-5 text-blue-400" />
             Image to video

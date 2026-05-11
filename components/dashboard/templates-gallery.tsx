@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useIsTouch } from "@/lib/use-is-mobile";
 
 type FeedItem = {
   id: string;
@@ -95,7 +96,7 @@ export function TemplatesGallery() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search title, tag, category…"
-          className="ml-auto w-64 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-purple-400"
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-purple-400 sm:ml-auto sm:w-64"
         />
       </div>
 
@@ -122,12 +123,40 @@ export function TemplatesGallery() {
 }
 
 function TemplateCard({ t }: { t: FeedItem }) {
+  const isTouch = useIsTouch();
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // On touch devices, hover doesn't exist — autoplay templates that are
+  // mostly in view and pause the others. On mouse devices we keep the
+  // hover-to-play affordance.
+  useEffect(() => {
+    if (!isTouch || t.kind !== "video") return;
+    const node = videoRef.current;
+    if (!node) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            node.play().catch(() => {});
+          } else {
+            node.pause();
+            node.currentTime = 0;
+          }
+        }
+      },
+      { threshold: 0.6 },
+    );
+    io.observe(node);
+    return () => io.disconnect();
+  }, [isTouch, t.kind]);
+
   return (
     <div className="group relative overflow-hidden rounded-xl border border-white/10 bg-white/5 transition-colors hover:border-purple-400/50">
       <div className="relative aspect-[4/5] w-full overflow-hidden bg-black/40">
         {t.kind === "video" ? (
           // eslint-disable-next-line jsx-a11y/media-has-caption
           <video
+            ref={videoRef}
             // Append #t=0.5 to coax the browser into showing a non-black
             // first frame even when the JPG poster hasn't loaded yet.
             src={`${t.url}#t=0.5`}
@@ -137,15 +166,23 @@ function TemplateCard({ t }: { t: FeedItem }) {
             loop
             playsInline
             preload="metadata"
-            onMouseEnter={(e) => {
-              const v = e.currentTarget;
-              v.play().catch(() => {});
-            }}
-            onMouseLeave={(e) => {
-              const v = e.currentTarget;
-              v.pause();
-              v.currentTime = 0;
-            }}
+            onMouseEnter={
+              isTouch
+                ? undefined
+                : (e) => {
+                    const v = e.currentTarget;
+                    v.play().catch(() => {});
+                  }
+            }
+            onMouseLeave={
+              isTouch
+                ? undefined
+                : (e) => {
+                    const v = e.currentTarget;
+                    v.pause();
+                    v.currentTime = 0;
+                  }
+            }
           />
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
