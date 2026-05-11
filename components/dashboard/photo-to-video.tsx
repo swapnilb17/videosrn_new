@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { loadTemplateAssetAsImageFile } from "@/lib/template-asset";
 import {
   Upload,
   X,
@@ -113,6 +114,9 @@ export function PhotoToVideo() {
   const searchParams = useSearchParams();
   // Optional prefill from the Templates "Remix" flow.
   const remixTemplateTitle = searchParams.get("template_title");
+  const remixAssetUrl = searchParams.get("asset_url");
+  const remixAspectParam = searchParams.get("aspect");
+  const remixDurationParam = searchParams.get("duration");
   const prefillTaskParam = searchParams.get("task");
   const prefillPrompt = (searchParams.get("prompt") ?? "").slice(
     0,
@@ -122,6 +126,13 @@ export function PhotoToVideo() {
     prefillTaskParam === "text_to_video" || prefillTaskParam === "image_to_video"
       ? prefillTaskParam
       : "image_to_video";
+  const initialAspect = ASPECTS.some((a) => a.value === remixAspectParam)
+    ? (remixAspectParam as (typeof ASPECTS)[number]["value"])
+    : "16:9";
+  const initialDuration = (() => {
+    const n = Number(remixDurationParam);
+    return DURATIONS.some((d) => d.value === n) ? n : 8;
+  })();
 
   const startRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLInputElement>(null);
@@ -133,9 +144,12 @@ export function PhotoToVideo() {
   const [endFrame, setEndFrame] = useState<File | null>(null);
   const [endPreview, setEndPreview] = useState<string | null>(null);
   const [prompt, setPrompt] = useState(prefillPrompt);
-  const [duration, setDuration] = useState(8);
+  const [duration, setDuration] = useState(initialDuration);
   const [camera, setCamera] = useState("zoom_in");
-  const [aspect, setAspect] = useState("16:9");
+  const [aspect, setAspect] = useState<string>(initialAspect);
+  const [loadingRemixAsset, setLoadingRemixAsset] = useState<boolean>(
+    Boolean(remixAssetUrl),
+  );
   const [videoTier, setVideoTier] = useState<(typeof VIDEO_TIERS)[number]["value"]>("1080");
   const [generating, setGenerating] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -151,6 +165,31 @@ export function PhotoToVideo() {
       if (pollingRef.current) clearInterval(pollingRef.current);
       if (longWaitTimerRef.current) clearTimeout(longWaitTimerRef.current);
     };
+  }, []);
+
+  // Pre-load the template's first frame as the start frame when arriving from
+  // the Templates "Remix" flow. Failure is non-fatal — the banner still shows,
+  // and the user can either upload their own start frame or switch the task
+  // to text-to-video.
+  useEffect(() => {
+    if (!remixAssetUrl) return;
+    let cancelled = false;
+    void (async () => {
+      const file = await loadTemplateAssetAsImageFile(
+        remixAssetUrl,
+        `template-${remixTemplateTitle ?? "start-frame"}`,
+      );
+      if (cancelled) return;
+      if (file) {
+        setStartFrame(file);
+        setStartPreview(URL.createObjectURL(file));
+      }
+      setLoadingRemixAsset(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const hasEndFrame = Boolean(endFrame);
@@ -326,11 +365,21 @@ export function PhotoToVideo() {
             <label className="text-sm text-slate-300">Prompt</label>
             {remixTemplateTitle ? (
               <div className="flex items-center gap-2 rounded-lg border border-purple-400/30 bg-purple-500/10 px-2.5 py-1.5 text-[11px] text-purple-100">
-                <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-300" />
+                {loadingRemixAsset ? (
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-purple-300" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-300" />
+                )}
                 <span className="truncate">
                   Remixing template:{" "}
                   <span className="font-medium">{remixTemplateTitle}</span>
-                  <span className="ml-1 text-purple-200/70">— edit the prompt below</span>
+                  <span className="ml-1 text-purple-200/70">
+                    {loadingRemixAsset
+                      ? "— loading start frame…"
+                      : remixAssetUrl
+                        ? "— start frame loaded, edit the motion prompt"
+                        : "— edit the prompt below"}
+                  </span>
                 </span>
               </div>
             ) : null}

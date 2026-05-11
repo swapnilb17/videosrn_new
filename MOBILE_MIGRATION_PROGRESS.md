@@ -71,9 +71,15 @@ Make EnablyAI_VGEN first-class on phones while **keeping the desktop UI byte-for
 - `components/dashboard/text-to-voice.tsx` — same stack pattern.
 - `components/dashboard/photo-to-video.tsx` — same stack pattern.
 - `components/dashboard/image-to-ad-video.tsx` — same stack pattern.
-- `components/dashboard/templates-gallery.tsx` — `IntersectionObserver` autoplay for touch devices, hover-only autoplay for mouse; full-width search on phones. **Remix flow**: each card is a `<Link>` to `/dashboard/create?service=…&prompt=…&template_id=…&template_title=…`. Image → `text-to-image`; video → `photo-to-video` with `task=text_to_video` (no upload needed). Overlay "Remix" pill is always visible on touch, hover-only on `md+`.
-- `components/dashboard/text-to-image.tsx` — reads `prompt` + `template_title` from `useSearchParams` for the Remix prefill. Shows a small "Remixing template: …" banner above the prompt textarea.
-- `components/dashboard/photo-to-video.tsx` — reads `prompt`, `task`, `template_title` from `useSearchParams`. Initial task respects `?task=text_to_video` so video-template remixes don't require a start frame. Same banner above the prompt textarea.
+- `components/dashboard/templates-gallery.tsx` — `IntersectionObserver` autoplay for touch devices, hover-only autoplay for mouse; full-width search on phones. **Remix flow**: each card is a `<Link>` to `/dashboard/create?…`. The URL now carries `template_id`, `template_title`, `aspect`, `duration`, `prompt`, `asset_url`. Image → Text-to-Image (`asset_url` = the template image; loaded as reference). Video → Photo-to-Video in `image_to_video` mode when `thumbnail_url` exists (`asset_url` = first-frame still; loaded as `startFrame`), otherwise falls back to `text_to_video`. Overlay "Remix" pill is always visible on touch, hover-only on `md+`. Prompt is now scaffolded (title + description + tags + category + instruction to match the reference) rather than a bare title.
+- `components/dashboard/text-to-image.tsx` — reads `prompt`, `template_title`, `aspect`, `asset_url` from `useSearchParams`. Initial `aspect` honors the template, and `asset_url` triggers a same-origin fetch via the proxy that hydrates `uploadedImage` + `imagePreview` so the model can match composition/style. Loading state shows in the Remix banner; failure is non-fatal.
+- `components/dashboard/photo-to-video.tsx` — reads `prompt`, `task`, `template_title`, `aspect`, `duration`, `asset_url` from `useSearchParams`. When `asset_url` is present, the same proxy hydrates `startFrame` + `startPreview` so the generated video opens from the template's first frame. Falls back gracefully if the proxy fails or no asset is provided.
+
+### New API routes
+- `app/api/template-asset-proxy/route.ts` — auth-gated same-origin GET proxy for S3 presigned template assets. Allowlist hostname: `*.amazonaws.com`. 25 MB cap, 120 s cache. Required because S3 CORS isn't open for browser `fetch()`; `<img>` / `<video>` work without it but Blob conversion needs same-origin.
+
+### New library
+- `lib/template-asset.ts` — `loadTemplateAssetAsImageFile(url, base)` helper. Calls the proxy, validates the content-type is an image, returns a `File` ready for the creator's `FormData`.
 - `components/dashboard/media-gallery.tsx` — `grid-cols-2` on mobile (was 1-col default).
 - `components/billing/usage-report.tsx` — wide table only at `md:` and up; mobile renders a card list with the same data.
 

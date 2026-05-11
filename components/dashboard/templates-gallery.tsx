@@ -27,28 +27,99 @@ type KindFilter = "all" | "image" | "video";
 
 const REMIX_PROMPT_MAX = 800;
 
-/** Build the creator URL that pre-fills the prompt from a template. Image
- *  templates go to Text to Image; video templates go to Image to Video in
- *  `text_to_video` mode so the user doesn't need to upload a start frame. */
-function buildRemixHref(t: FeedItem): string {
+/** Snap a (width / height) ratio to a creator-supported aspect string.
+ *  Returns `undefined` if the template doesn't carry usable dimensions —
+ *  callers should then leave the existing default in place. */
+function inferAspect(w: number | null, h: number | null): string | undefined {
+  if (!w || !h || w <= 0 || h <= 0) return undefined;
+  const r = w / h;
+  if (r >= 1.5) return "16:9";
+  if (r <= 0.7) return "9:16";
+  if (Math.abs(r - 4 / 3) < 0.1) return "4:3";
+  if (Math.abs(r - 1) < 0.1) return "1:1";
+  return undefined;
+}
+
+/** Snap duration to the Photo-to-Video allowed values (4 / 6 / 8 seconds). */
+function inferDuration(s: number | null): 4 | 6 | 8 | undefined {
+  if (!s || s <= 0) return undefined;
+  if (s <= 4) return 4;
+  if (s <= 6) return 6;
+  return 8;
+}
+
+/** Build a richer text-to-image prompt scaffold from template metadata.
+ *  The Remix flow also seeds the *reference image*, so the prompt mostly
+ *  needs to describe the subject + style and remind the model to match the
+ *  reference. */
+function buildImageRemixPrompt(t: FeedItem): string {
   const parts: string[] = [];
   if (t.title) parts.push(t.title.trim());
   if (t.description) parts.push(t.description.trim());
   if (t.tags && t.tags.length > 0) {
     parts.push(`Style: ${t.tags.slice(0, 6).join(", ")}`);
   }
-  const prompt = parts.filter(Boolean).join(". ").slice(0, REMIX_PROMPT_MAX);
+  if (t.category) parts.push(`Category: ${t.category}`);
+  parts.push(
+    "High-quality, detailed, professional. Match the composition, lighting, and mood of the reference image.",
+  );
+  return parts.filter(Boolean).join(". ").slice(0, REMIX_PROMPT_MAX);
+}
 
-  const params = new URLSearchParams();
-  if (t.kind === "video") {
-    params.set("service", "photo-to-video");
-    params.set("task", "text_to_video");
-  } else {
-    params.set("service", "text-to-image");
+/** Build a *motion* prompt for the image-to-video remix flow. The visual
+ *  itself is anchored by the template's first frame (start image), so the
+ *  prompt focuses on motion + mood rather than describing what's in the
+ *  scene. */
+function buildVideoRemixPrompt(t: FeedItem, hasStartFrame: boolean): string {
+  const parts: string[] = [];
+  if (t.title) parts.push(`Animate "${t.title.trim()}".`);
+  if (t.description) parts.push(t.description.trim());
+  if (t.tags && t.tags.length > 0) {
+    parts.push(`Mood: ${t.tags.slice(0, 6).join(", ")}`);
   }
-  params.set("prompt", prompt);
+  parts.push(
+    hasStartFrame
+      ? "Cinematic, subtle natural motion that matches the look and feel of the reference frame."
+      : "Cinematic, professional, smooth camera motion in a polished short-form style.",
+  );
+  return parts.filter(Boolean).join(" ").slice(0, REMIX_PROMPT_MAX);
+}
+
+/** Build the creator URL for the Templates "Remix" flow.
+ *  - Image templates → Text-to-Image with the template image as reference.
+ *  - Video templates → Image-to-Video with the template's first frame as
+ *    start frame (when a still URL is available). When no thumbnail exists
+ *    we fall back to `text_to_video` so the user only needs to edit a
+ *    prompt. */
+function buildRemixHref(t: FeedItem): string {
+  const params = new URLSearchParams();
   params.set("template_id", t.id);
   params.set("template_title", t.title);
+
+  const aspect = inferAspect(t.width, t.height);
+  if (aspect) params.set("aspect", aspect);
+
+  if (t.kind === "video") {
+    // For video remixes we need a *still* image as the start frame. The
+    // `thumbnail_url` is a presigned still that the admin uploaded; if it's
+    // missing, gracefully degrade to text-to-video.
+    const startStill = t.thumbnail_url ?? null;
+    params.set("service", "photo-to-video");
+    if (startStill) {
+      params.set("task", "image_to_video");
+      params.set("asset_url", startStill);
+    } else {
+      params.set("task", "text_to_video");
+    }
+    params.set("prompt", buildVideoRemixPrompt(t, Boolean(startStill)));
+    const duration = inferDuration(t.duration_seconds);
+    if (duration) params.set("duration", String(duration));
+  } else {
+    // Image template → Text-to-Image with the template image as a reference.
+    params.set("service", "text-to-image");
+    params.set("prompt", buildImageRemixPrompt(t));
+    if (t.url) params.set("asset_url", t.url);
+  }
   return `/dashboard/create?${params.toString()}`;
 }
 

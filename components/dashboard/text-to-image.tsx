@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { loadTemplateAssetAsImageFile } from "@/lib/template-asset";
 import {
   ImageIcon,
   Sparkles,
@@ -71,10 +72,16 @@ export function TextToImage() {
   // re-render via param change would also be handled correctly by initializer.
   const prefilledPrompt = searchParams.get("prompt") ?? "";
   const remixTemplateTitle = searchParams.get("template_title");
+  const remixAssetUrl = searchParams.get("asset_url");
+  const remixAspectParam = searchParams.get("aspect");
+  const initialAspect =
+    remixAspectParam && ASPECTS.some((a) => a.value === remixAspectParam)
+      ? remixAspectParam
+      : "1:1";
 
   const [prompt, setPrompt] = useState(prefilledPrompt);
   const [style, setStyle] = useState("photorealistic");
-  const [aspect, setAspect] = useState("1:1");
+  const [aspect, setAspect] = useState(initialAspect);
   const [count, setCount] = useState<number>(1);
   const [generating, setGenerating] = useState(false);
   const [downloadIndex, setDownloadIndex] = useState<number | null>(null);
@@ -84,6 +91,9 @@ export function TextToImage() {
   const [uploadedImage, setUploadedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
+  const [loadingRemixAsset, setLoadingRemixAsset] = useState<boolean>(
+    Boolean(remixAssetUrl),
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleDownloadImage(url: string, index: number) {
@@ -112,6 +122,28 @@ export function TextToImage() {
     setUploadedImage(file);
     const url = URL.createObjectURL(file);
     setImagePreview(url);
+  }, []);
+
+  // Pre-load the template's image as a reference when arriving from the
+  // Templates "Remix" flow. Failure is non-fatal — banner still appears,
+  // user can upload a different image or generate prompt-only.
+  useEffect(() => {
+    if (!remixAssetUrl) return;
+    let cancelled = false;
+    void (async () => {
+      const file = await loadTemplateAssetAsImageFile(
+        remixAssetUrl,
+        `template-${remixTemplateTitle ?? "reference"}`,
+      );
+      if (cancelled) return;
+      if (file) handleImageSelect(file);
+      setLoadingRemixAsset(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Run once on mount with the URL captured by the initial searchParams read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleDrop = useCallback(
@@ -190,11 +222,21 @@ export function TextToImage() {
             <label className="text-sm text-slate-300">Describe your image</label>
             {remixTemplateTitle ? (
               <div className="flex items-center gap-2 rounded-lg border border-purple-400/30 bg-purple-500/10 px-2.5 py-1.5 text-[11px] text-purple-100">
-                <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-300" />
+                {loadingRemixAsset ? (
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-purple-300" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-300" />
+                )}
                 <span className="truncate">
                   Remixing template:{" "}
                   <span className="font-medium">{remixTemplateTitle}</span>
-                  <span className="ml-1 text-purple-200/70">— edit the prompt below</span>
+                  <span className="ml-1 text-purple-200/70">
+                    {loadingRemixAsset
+                      ? "— loading reference image…"
+                      : remixAssetUrl
+                        ? "— reference image loaded, edit the prompt"
+                        : "— edit the prompt below"}
+                  </span>
                 </span>
               </div>
             ) : null}
