@@ -8,6 +8,12 @@ URLs for playback.
 The endpoint is cheap (small joinless query + presigned URL signing) and
 the user dashboard caches responses for 60 seconds, mirroring the BFF
 cache strategy used by the admin app.
+
+The companion ``/{template_id}/asset`` endpoint streams the underlying
+object bytes directly through the backend so the browser can re-upload
+the template as a reference image / start frame for the "Remix" flow —
+something the presigned URL can't power because S3 isn't CORS-enabled
+for our origin.
 """
 
 from __future__ import annotations
@@ -15,7 +21,8 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +33,8 @@ from app.models import ContentTemplate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
+
+_MAX_ASSET_BYTES = 25 * 1024 * 1024  # 25 MB hard cap on the streamed payload.
 
 
 @router.get("/feed")
@@ -104,3 +113,107 @@ async def templates_feed(
             }
         )
     return {"items": items}
+
+
+@router.get("/{template_id}/asset")
+async def template_asset(
+    template_id: str,
+    settings: Annotated[Settings, Depends(get_settings)],
+    session: Annotated[AsyncSession | None, Depends(get_db_session)],
+    variant: Annotated[str, Query(pattern="^(image|thumbnail)$")] = "image",
+) -> StreamingResponse:
+    """Stream the raw bytes of a published template's asset from S3.
+
+    Powers the dashboard's "Remix" flow: the browser fetches this endpoint
+    same-origin to get the bytes into a Blob/File, then re-uploads them as
+    a reference image (text-to-image) or start frame (image-to-video).
+
+    ``variant``:
+        - ``image`` (default): the main template asset (the image for image
+          templates, or the source video for video templates).
+        - ``thumbnail``: the still-frame thumbnail stored under
+          ``thumbnail_s3_key``. For video templates this is the only usable
+          asset for "start from this frame" remixing; for image templates
+          we fall back to the main asset if no thumbnail exists.
+    """
+    if session is None:
+        raise HTTPException(status_code=503, detail="Database is not configured.")
+
+    bucket = (settings.s3_bucket or "").strip()
+    if not bucket:
+        raise HTTPException(status_code=503, detail="S3 is not configured.")
+
+    row = (
+        await session.execute(
+            select(ContentTemplate)
+            .where(ContentTemplate.id == template_id)
+            .where(ContentTemplate.published.is_(True))
+        )
+    ).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Template not found.")
+
+    if variant == "thumbnail":
+        key = row.thumbnail_s3_key or (
+            row.s3_key if row.kind == "image" else None
+        )
+        if not key:
+            raise HTTPException(
+                status_code=404,
+                detail="No thumbnail available for this template.",
+            )
+    else:
+        key = row.s3_key
+        if not key:
+            raise HTTPException(status_code=404, detail="Template has no asset.")
+
+    from app.services.s3_storage import s3_client  # noqa: PLC0415
+
+    try:
+        client = s3_client(settings)
+        obj = client.get_object(Bucket=bucket, Key=key)
+    except Exception as e:  # noqa: BLE001 — boto raises a wide set of exceptions
+        logger.exception("templates asset: S3 get_object failed key=%s", key)
+        raise HTTPException(
+            status_code=502, detail=f"Could not read asset from S3: {e}"
+        ) from e
+
+    body = obj["Body"]
+    media_type = (
+        obj.get("ContentType")
+        or row.content_type
+        or ("image/jpeg" if variant == "thumbnail" else "application/octet-stream")
+    )
+
+    declared_len = obj.get("ContentLength")
+    if isinstance(declared_len, int) and declared_len > _MAX_ASSET_BYTES:
+        raise HTTPException(status_code=413, detail="Asset too large.")
+
+    def _stream() -> Any:
+        # Bounded streaming — defend against unexpectedly huge objects even
+        # if ContentLength is missing or lies.
+        sent = 0
+        try:
+            for chunk in body.iter_chunks(chunk_size=64 * 1024):
+                sent += len(chunk)
+                if sent > _MAX_ASSET_BYTES:
+                    logger.warning(
+                        "templates asset: aborting stream over size cap key=%s",
+                        key,
+                    )
+                    return
+                yield chunk
+        finally:
+            try:
+                body.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    headers = {
+        "Cache-Control": "public, max-age=300",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if isinstance(declared_len, int):
+        headers["Content-Length"] = str(declared_len)
+
+    return StreamingResponse(_stream(), media_type=media_type, headers=headers)

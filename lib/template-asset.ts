@@ -1,39 +1,32 @@
 /**
- * Helpers for the Templates "Remix" flow: fetch a template's S3 presigned
- * asset via the same-origin proxy and hand it to a creator panel as a `File`
- * so it can be re-uploaded as a start frame / reference image.
+ * Helpers for the Templates "Remix" flow: pull a template's bytes from the
+ * backend (which fetches them straight from S3 with its own credentials)
+ * and hand them to a creator panel as a `File` so they can be re-uploaded
+ * as a start frame / reference image.
  *
- * Why a proxy? See `app/api/template-asset-proxy/route.ts` — the S3 bucket
- * doesn't allow cross-origin `fetch()` even though `<img>` / `<video>` work.
+ * Why the backend (and not the presigned URL)?
+ *   - The S3 bucket isn't CORS-configured for our origin, so the browser
+ *     can't `fetch()` the presigned URL directly even though `<img>` /
+ *     `<video>` tags work.
+ *   - The dashboard's nginx layer routes `/api/templates/*` straight to
+ *     FastAPI, so a Next.js route handler in that namespace is never hit.
+ *     The clean path is the existing `/api/templates/{id}/asset` backend
+ *     route, which streams the object bytes through.
  */
 
-const PROXY_PATH = "/api/template-asset-proxy";
+export type TemplateAssetVariant = "image" | "thumbnail";
 
-/** Try the response Content-Type first, then the URL path extension, then
- *  fall back to JPEG. We never want to reject a real image just because S3
- *  served it with `application/octet-stream`. */
-function inferImageMime(rawUrl: string, blobType: string | undefined): string {
+function backendAssetUrl(
+  templateId: string,
+  variant: TemplateAssetVariant,
+): string {
+  const v = variant === "thumbnail" ? "thumbnail" : "image";
+  return `/api/templates/${encodeURIComponent(templateId)}/asset?variant=${v}`;
+}
+
+function inferImageMimeFromBlob(blobType: string | undefined): string {
   if (blobType && blobType.startsWith("image/")) return blobType;
-  let pathname = "";
-  try {
-    pathname = new URL(rawUrl).pathname;
-  } catch {
-    pathname = rawUrl;
-  }
-  const ext = pathname.toLowerCase().match(/\.(jpe?g|png|webp|gif|bmp)(\?|$)/);
-  if (!ext) return "image/jpeg";
-  switch (ext[1]) {
-    case "png":
-      return "image/png";
-    case "webp":
-      return "image/webp";
-    case "gif":
-      return "image/gif";
-    case "bmp":
-      return "image/bmp";
-    default:
-      return "image/jpeg";
-  }
+  return "image/jpeg";
 }
 
 function extensionForMime(mime: string): string {
@@ -45,29 +38,29 @@ function extensionForMime(mime: string): string {
 }
 
 /**
- * Fetch a template asset (image) via the same-origin proxy and wrap it in a
- * `File` ready to be appended to a multipart form. Returns `null` on any
+ * Fetch a template's bytes via the backend asset endpoint and wrap them in
+ * a `File` ready to be appended to a multipart form. Returns `null` on any
  * failure — callers should fall back to prompt-only mode without throwing.
  *
- * This is intentionally permissive about content type: the template asset
- * URL came from our own trusted feed, so we don't need to defensively
- * reject responses with a generic MIME like `application/octet-stream`.
+ * `variant` defaults to `image` for image templates and should be
+ * `thumbnail` for video templates so we get a still frame.
  */
-export async function loadTemplateAssetAsImageFile(
-  assetUrl: string,
+export async function loadTemplateAsImageFile(
+  templateId: string,
+  variant: TemplateAssetVariant,
   filenameBase: string,
 ): Promise<File | null> {
-  if (!assetUrl) return null;
-  const proxied = `${PROXY_PATH}?url=${encodeURIComponent(assetUrl)}`;
+  if (!templateId) return null;
+  const url = backendAssetUrl(templateId, variant);
   let res: Response;
   try {
-    res = await fetch(proxied, {
+    res = await fetch(url, {
       method: "GET",
       credentials: "include",
     });
   } catch (err) {
     if (typeof console !== "undefined") {
-      console.error("[remix] proxy fetch failed", err);
+      console.error("[remix] backend asset fetch failed", err);
     }
     return null;
   }
@@ -80,7 +73,7 @@ export async function loadTemplateAssetAsImageFile(
     }
     if (typeof console !== "undefined") {
       console.error(
-        `[remix] proxy returned ${res.status} for ${assetUrl}`,
+        `[remix] backend returned ${res.status} for ${url}`,
         body,
       );
     }
@@ -99,14 +92,14 @@ export async function loadTemplateAssetAsImageFile(
 
   if (!blob || blob.size === 0) {
     if (typeof console !== "undefined") {
-      console.error("[remix] proxy returned empty body");
+      console.error("[remix] backend returned empty body");
     }
     return null;
   }
 
-  const mime = inferImageMime(assetUrl, blob.type);
-  // Re-wrap the blob with the inferred MIME so downstream consumers don't
-  // see `application/octet-stream` or an empty type.
+  const mime = inferImageMimeFromBlob(blob.type);
+  // Re-wrap so downstream consumers see a proper image MIME even if the
+  // upstream content-type was empty.
   const typed = new Blob([blob], { type: mime });
   const ext = extensionForMime(mime);
   const safeBase =

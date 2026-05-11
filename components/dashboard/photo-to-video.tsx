@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { loadTemplateAssetAsImageFile } from "@/lib/template-asset";
+import { loadTemplateAsImageFile } from "@/lib/template-asset";
 import {
   Upload,
   X,
@@ -114,7 +114,9 @@ export function PhotoToVideo() {
   const searchParams = useSearchParams();
   // Optional prefill from the Templates "Remix" flow.
   const remixTemplateTitle = searchParams.get("template_title");
-  const remixAssetUrl = searchParams.get("asset_url");
+  const remixTemplateId = searchParams.get("template_id");
+  const remixAssetVariant = searchParams.get("asset_variant");
+  const shouldLoadRemixAsset = Boolean(remixTemplateId && remixAssetVariant);
   const remixAspectParam = searchParams.get("aspect");
   const remixDurationParam = searchParams.get("duration");
   const prefillTaskParam = searchParams.get("task");
@@ -148,7 +150,7 @@ export function PhotoToVideo() {
   const [camera, setCamera] = useState("zoom_in");
   const [aspect, setAspect] = useState<string>(initialAspect);
   const [loadingRemixAsset, setLoadingRemixAsset] = useState<boolean>(
-    Boolean(remixAssetUrl),
+    shouldLoadRemixAsset,
   );
   const [videoTier, setVideoTier] = useState<(typeof VIDEO_TIERS)[number]["value"]>("1080");
   const [generating, setGenerating] = useState(false);
@@ -172,11 +174,13 @@ export function PhotoToVideo() {
   // and the user can either upload their own start frame or switch the task
   // to text-to-video.
   useEffect(() => {
-    if (!remixAssetUrl) return;
+    if (!shouldLoadRemixAsset || !remixTemplateId) return;
     let cancelled = false;
     void (async () => {
-      const file = await loadTemplateAssetAsImageFile(
-        remixAssetUrl,
+      const variant = remixAssetVariant === "thumbnail" ? "thumbnail" : "image";
+      const file = await loadTemplateAsImageFile(
+        remixTemplateId,
+        variant,
         `template-${remixTemplateTitle ?? "start-frame"}`,
       );
       if (cancelled) return;
@@ -367,7 +371,7 @@ export function PhotoToVideo() {
               (() => {
                 const frameAttached = Boolean(startFrame);
                 const frameFailed =
-                  Boolean(remixAssetUrl) && !loadingRemixAsset && !frameAttached;
+                  shouldLoadRemixAsset && !loadingRemixAsset && !frameAttached;
                 const tone = frameFailed
                   ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
                   : "border-purple-400/30 bg-purple-500/10 text-purple-100";

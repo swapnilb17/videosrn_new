@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { loadTemplateAssetAsImageFile } from "@/lib/template-asset";
+import { loadTemplateAsImageFile } from "@/lib/template-asset";
 import {
   ImageIcon,
   Sparkles,
@@ -72,7 +72,11 @@ export function TextToImage() {
   // re-render via param change would also be handled correctly by initializer.
   const prefilledPrompt = searchParams.get("prompt") ?? "";
   const remixTemplateTitle = searchParams.get("template_title");
-  const remixAssetUrl = searchParams.get("asset_url");
+  const remixTemplateId = searchParams.get("template_id");
+  const remixAssetVariant = searchParams.get("asset_variant"); // "image" | "thumbnail"
+  // Should we attempt to load a reference image? Only if the gallery
+  // explicitly told us to (asset_variant is set) AND we have a template id.
+  const shouldLoadRemixAsset = Boolean(remixTemplateId && remixAssetVariant);
   const remixAspectParam = searchParams.get("aspect");
   const initialAspect =
     remixAspectParam && ASPECTS.some((a) => a.value === remixAspectParam)
@@ -92,7 +96,7 @@ export function TextToImage() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [loadingRemixAsset, setLoadingRemixAsset] = useState<boolean>(
-    Boolean(remixAssetUrl),
+    shouldLoadRemixAsset,
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -129,11 +133,13 @@ export function TextToImage() {
   // come from our own trusted feed. Failure is non-fatal; the banner shows
   // the error so the user can pick a different template or upload manually.
   useEffect(() => {
-    if (!remixAssetUrl) return;
+    if (!shouldLoadRemixAsset || !remixTemplateId) return;
     let cancelled = false;
     void (async () => {
-      const file = await loadTemplateAssetAsImageFile(
-        remixAssetUrl,
+      const variant = remixAssetVariant === "thumbnail" ? "thumbnail" : "image";
+      const file = await loadTemplateAsImageFile(
+        remixTemplateId,
+        variant,
         `template-${remixTemplateTitle ?? "reference"}`,
       );
       if (cancelled) return;
@@ -146,7 +152,7 @@ export function TextToImage() {
     return () => {
       cancelled = true;
     };
-    // Run once on mount with the URL captured by the initial searchParams read.
+    // Run once on mount with the params captured by the initial searchParams read.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -228,7 +234,7 @@ export function TextToImage() {
               (() => {
                 const referenceAttached = Boolean(uploadedImage);
                 const referenceFailed =
-                  Boolean(remixAssetUrl) && !loadingRemixAsset && !referenceAttached;
+                  shouldLoadRemixAsset && !loadingRemixAsset && !referenceAttached;
                 const tone = referenceFailed
                   ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
                   : "border-purple-400/30 bg-purple-500/10 text-purple-100";

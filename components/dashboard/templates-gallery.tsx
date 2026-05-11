@@ -88,9 +88,14 @@ function buildVideoRemixPrompt(t: FeedItem, hasStartFrame: boolean): string {
 /** Build the creator URL for the Templates "Remix" flow.
  *  - Image templates → Text-to-Image with the template image as reference.
  *  - Video templates → Image-to-Video with the template's first frame as
- *    start frame (when a still URL is available). When no thumbnail exists
- *    we fall back to `text_to_video` so the user only needs to edit a
- *    prompt. */
+ *    start frame (when a thumbnail still exists). When no thumbnail exists
+ *    we gracefully fall back to `text_to_video` so the user only needs to
+ *    edit a prompt.
+ *
+ *  The creator reads `template_id` + `asset_variant` and pulls the bytes
+ *  directly from the backend's `/api/templates/{id}/asset` endpoint — the
+ *  presigned URL on `url` / `thumbnail_url` cannot be used because S3
+ *  doesn't allow cross-origin `fetch()` from the dashboard. */
 function buildRemixHref(t: FeedItem): string {
   const params = new URLSearchParams();
   params.set("template_id", t.id);
@@ -100,25 +105,25 @@ function buildRemixHref(t: FeedItem): string {
   if (aspect) params.set("aspect", aspect);
 
   if (t.kind === "video") {
-    // For video remixes we need a *still* image as the start frame. The
-    // `thumbnail_url` is a presigned still that the admin uploaded; if it's
-    // missing, gracefully degrade to text-to-video.
-    const startStill = t.thumbnail_url ?? null;
+    // For video remixes we need a *still* image as the start frame. If the
+    // template has a thumbnail, the backend will serve it under
+    // `variant=thumbnail`. Otherwise we degrade to text-to-video.
+    const hasThumbnail = Boolean(t.thumbnail_url);
     params.set("service", "photo-to-video");
-    if (startStill) {
+    if (hasThumbnail) {
       params.set("task", "image_to_video");
-      params.set("asset_url", startStill);
+      params.set("asset_variant", "thumbnail");
     } else {
       params.set("task", "text_to_video");
     }
-    params.set("prompt", buildVideoRemixPrompt(t, Boolean(startStill)));
+    params.set("prompt", buildVideoRemixPrompt(t, hasThumbnail));
     const duration = inferDuration(t.duration_seconds);
     if (duration) params.set("duration", String(duration));
   } else {
     // Image template → Text-to-Image with the template image as a reference.
     params.set("service", "text-to-image");
     params.set("prompt", buildImageRemixPrompt(t));
-    if (t.url) params.set("asset_url", t.url);
+    params.set("asset_variant", "image");
   }
   return `/dashboard/create?${params.toString()}`;
 }
