@@ -72,11 +72,16 @@ export async function loadTemplateAssetAsImageFile(
     return null;
   }
   if (!res.ok) {
+    let body = "";
+    try {
+      body = await res.text();
+    } catch {
+      /* ignore */
+    }
     if (typeof console !== "undefined") {
       console.error(
-        "[remix] proxy returned non-OK status",
-        res.status,
-        await res.text().catch(() => ""),
+        `[remix] proxy returned ${res.status} for ${assetUrl}`,
+        body,
       );
     }
     return null;
